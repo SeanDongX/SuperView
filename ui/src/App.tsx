@@ -6,8 +6,10 @@ import { fetchEventEvidence, fetchIngestJob, fetchProjects, fetchRun, fetchTimel
 type Theme = "light" | "dark";
 
 const LANES = ["Product", "Architecture", "Code", "Agent Runs", "Verification", "Risks"];
+const SEMANTIC_LANES = ["Product", "Architecture", "Code", "Verification", "Risks"];
 const TIMELINE_LIMIT = 300;
 const LANE_RENDER_LIMIT = 28;
+const TRACE_RENDER_LIMIT = 36;
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("superview-theme") as Theme | null) ?? "light");
@@ -165,6 +167,7 @@ export function App() {
     }
     return groups;
   }, [timeline]);
+  const traceEvents = eventsByLane.get("Agent Runs") ?? [];
 
   const drawerEvent = selectedNode ? selectedRun?.events.find((event) => event.id === selectedNode.eventId) ?? selectedEvent : selectedEvent;
   const drawerEvidence = eventEvidence?.event.id === drawerEvent?.id ? eventEvidence : null;
@@ -258,7 +261,7 @@ export function App() {
                 <em>{timelineOffset + 1}-{pageEnd} of {totalEvents}</em>
               </div>
               <div className="timeline-controls">
-                <span>{timeline?.events.length ?? 0} events loaded, lane dots capped at {LANE_RENDER_LIMIT} each</span>
+                <span>{timeline?.events.length ?? 0} events loaded, semantic lane dots capped at {LANE_RENDER_LIMIT} each</span>
                 <div>
                   <button className={`secondary-button ${showCausalPaths ? "active" : ""}`} onClick={() => setShowCausalPaths((current) => !current)}>
                     <GitBranch size={15} />
@@ -278,7 +281,7 @@ export function App() {
                 ))}
               </div>
               <div className="lanes">
-                {LANES.map((lane) => (
+                {SEMANTIC_LANES.map((lane) => (
                   <div className="lane" key={lane}>
                     <div className="lane-label">
                       <span>{lane}</span>
@@ -306,6 +309,10 @@ export function App() {
                   </div>
                 ))}
               </div>
+              <AgentTraceRail events={traceEvents} selectedEventId={drawerEvent?.id ?? null} causalView={causalView} showCausalPaths={showCausalPaths} onSelectEvent={(event) => {
+                setSelectedNode(null);
+                setSelectedEvent(event);
+              }} />
 
               {selectedRun ? (
                 <RunReplayPanel
@@ -429,6 +436,44 @@ function CausalRibbon({ view }: { view: CausalView }) {
       ) : (
         <p className="muted">No strong causal link is visible on the current timeline page. Same-turn context still appears in the Evidence panel.</p>
       )}
+    </section>
+  );
+}
+
+function AgentTraceRail({
+  events,
+  selectedEventId,
+  causalView,
+  showCausalPaths,
+  onSelectEvent
+}: {
+  events: TimelineEvent[];
+  selectedEventId: string | null;
+  causalView: CausalView;
+  showCausalPaths: boolean;
+  onSelectEvent: (event: TimelineEvent) => void;
+}) {
+  return (
+    <section className="agent-trace-rail" aria-label="Agent Trace">
+      <div className="agent-trace-heading">
+        <TerminalSquare size={15} />
+        <span>Agent Trace</span>
+        <small>{events.length} execution events</small>
+      </div>
+      <div className="trace-track">
+        {events.slice(0, TRACE_RENDER_LIMIT).map((event) => (
+          <button
+            key={event.id}
+            className={eventDotClass(event, selectedEventId, causalView, showCausalPaths).replace("event-dot", "trace-dot")}
+            title={event.title}
+            data-event-id={event.id}
+            onClick={() => onSelectEvent(event)}
+          >
+            <span>{shortLabel(event.title)}</span>
+          </button>
+        ))}
+        {events.length > TRACE_RENDER_LIMIT ? <span className="lane-overflow">+{events.length - TRACE_RENDER_LIMIT} more trace events</span> : null}
+      </div>
     </section>
   );
 }

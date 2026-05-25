@@ -139,9 +139,12 @@ test("scans fixture logs, renders timeline, opens replay, and toggles theme", as
 
   await expect(page.getByText(/Ingest completed/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Engineering Timeline")).toBeVisible();
+  await expect(page.getByText("Agent Trace")).toBeVisible();
+  await expect(page.locator(".lane-label").filter({ hasText: "Agent Runs" })).toHaveCount(0);
   await expect(page.getByText("1-300 of 340")).toBeVisible();
-  await expect(page.getByText("300 events loaded, lane dots capped at 28 each")).toBeVisible();
+  await expect(page.getByText("300 events loaded, semantic lane dots capped at 28 each")).toBeVisible();
   await expect(page.getByText("+122 more on this page").first()).toBeVisible();
+  await expect(page.getByText("+114 more trace events")).toBeVisible();
   await page.getByRole("button", { name: "Load more" }).click();
   await expect(page.getByText("301-340 of 340")).toBeVisible();
   await expect(page.getByText("Run Ledger")).toBeVisible();
