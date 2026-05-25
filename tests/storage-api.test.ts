@@ -64,6 +64,7 @@ describe("SuperView API", () => {
     expect(timeline.body.limit).toBe(2);
     expect(timeline.body.offset).toBe(1);
     expect(timeline.body.episodes.length).toBeGreaterThan(0);
+    expect(Array.isArray(timeline.body.causalEdges)).toBe(true);
 
     const evidenceEvent = timeline.body.events.find((event: { rawEventRefId: string | null }) => event.rawEventRefId);
     expect(evidenceEvent).toBeTruthy();
@@ -86,6 +87,16 @@ describe("SuperView API", () => {
       durationMs: expect.any(Number),
       outputEventId: expect.any(String)
     });
+    expect(fullTimeline.body.causalEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromEventId: patchedCall.id,
+          toEventId: patchedCall.outputEventId,
+          type: "same_call",
+          confidence: "deterministic"
+        })
+      ])
+    );
   });
 
   it("adds git commits to the project timeline when sessions belong to a git repo", async () => {

@@ -23,6 +23,18 @@ export type TimelineLane =
 
 export type EventStatus = "running" | "success" | "failed" | "unknown";
 
+export type CausalEdgeType =
+  | "same_turn"
+  | "same_call"
+  | "implements_prompt"
+  | "updates_design"
+  | "verified_by"
+  | "failed_by"
+  | "retried_by"
+  | "committed_as";
+
+export type CausalConfidence = "deterministic" | "inferred";
+
 export type ReplayNodeType =
   | "start"
   | "context"
@@ -117,6 +129,17 @@ export interface Episode {
   eventIds: string[];
 }
 
+export interface CausalEdge {
+  id: string;
+  projectId: string;
+  fromEventId: string;
+  toEventId: string;
+  type: CausalEdgeType;
+  confidence: CausalConfidence;
+  reason: string;
+  evidence: string | null;
+}
+
 export interface Artifact {
   id: string;
   eventId: string;
@@ -168,6 +191,7 @@ export interface ProjectTimeline {
   project: ProjectRecord;
   episodes: Episode[];
   events: TimelineEvent[];
+  causalEdges: CausalEdge[];
   totalEvents?: number;
   limit?: number;
   offset?: number;

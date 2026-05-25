@@ -50,6 +50,46 @@ describe("Codex parser and normalizer", () => {
     expect(nodes.some((node) => node.type === "hazard")).toBe(true);
   });
 
+  it("builds causal edges between prompts, patches, failed tests, and retries", () => {
+    const lines = parseCodexJsonlContent(fixture("call-association-rollout.jsonl"), "call-association-rollout.jsonl");
+    const bundle = normalizeCodexLines(lines, { repoRoot: "/tmp/superview-fixture" });
+    expect(bundle).toBeTruthy();
+
+    const timeline = buildProjectTimeline(bundle!.project, bundle!.events);
+    const { causalEdges } = timeline;
+    const docCall = timeline.events.find((event) => event.callId === "call-docs" && event.title === "Patched files");
+    const docOutput = timeline.events.find((event) => event.id === docCall?.outputEventId);
+    const testCall = timeline.events.find((event) => event.callId === "call-test" && event.toolName === "functions.exec_command");
+    const testOutput = timeline.events.find((event) => event.id === testCall?.outputEventId);
+    const retryMessage = timeline.events.find((event) => event.title.includes("Retrying"));
+
+    expect(causalEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromEventId: docCall?.id,
+          toEventId: docOutput?.id,
+          type: "same_call",
+          confidence: "deterministic"
+        }),
+        expect.objectContaining({
+          toEventId: docCall?.id,
+          type: "updates_design"
+        }),
+        expect.objectContaining({
+          fromEventId: testCall?.id,
+          toEventId: testOutput?.id,
+          type: "failed_by"
+        }),
+        expect.objectContaining({
+          fromEventId: testOutput?.id,
+          toEventId: retryMessage?.id,
+          type: "retried_by"
+        })
+      ])
+    );
+    expect(causalEdges.every((edge) => edge.reason.length > 0)).toBe(true);
+  });
+
   it("associates function call outputs with calls and derives lanes for docs, failures, and retries", () => {
     const lines = parseCodexJsonlContent(fixture("call-association-rollout.jsonl"), "call-association-rollout.jsonl");
     const bundle = normalizeCodexLines(lines, { repoRoot: "/tmp/superview-fixture" });

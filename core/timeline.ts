@@ -1,5 +1,5 @@
 import { addMinutes, differenceInMinutes, isValid, parseISO } from "date-fns";
-import { Episode, EventStatus, ProjectRecord, ProjectTimeline, TimelineEvent } from "./types";
+import { CausalConfidence, CausalEdge, CausalEdgeType, Episode, EventStatus, ProjectRecord, ProjectTimeline, TimelineEvent } from "./types";
 import { stableId } from "./id";
 
 const EPISODE_GAP_MINUTES = 90;
@@ -9,8 +9,118 @@ export function buildProjectTimeline(project: ProjectRecord, events: TimelineEve
   return {
     project,
     events: sortedEvents,
-    episodes: groupEpisodes(project.id, sortedEvents)
+    episodes: groupEpisodes(project.id, sortedEvents),
+    causalEdges: buildCausalEdges(project.id, sortedEvents)
   };
+}
+
+export function buildCausalEdges(projectId: string, events: TimelineEvent[]): CausalEdge[] {
+  const sortedEvents = events
+    .filter((event) => event.projectId === projectId)
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const byId = new Map(sortedEvents.map((event) => [event.id, event]));
+  const edges = new Map<string, CausalEdge>();
+
+  const addEdge = (
+    from: TimelineEvent | undefined,
+    to: TimelineEvent | undefined,
+    type: CausalEdgeType,
+    confidence: CausalConfidence,
+    reason: string,
+    evidence: string | null = null
+  ) => {
+    if (!from || !to || from.id === to.id) return;
+    const key = `${from.id}:${to.id}:${type}`;
+    if (edges.has(key)) return;
+    edges.set(key, {
+      id: stableId("causal", projectId, from.id, to.id, type),
+      projectId,
+      fromEventId: from.id,
+      toEventId: to.id,
+      type,
+      confidence,
+      reason,
+      evidence
+    });
+  };
+
+  for (let index = 1; index < sortedEvents.length; index += 1) {
+    const previous = sortedEvents[index - 1];
+    const current = sortedEvents[index];
+    if (previous.turnId && current.turnId === previous.turnId) {
+      addEdge(previous, current, "same_turn", "deterministic", `Same turn_id ${current.turnId}.`, current.turnId);
+    }
+  }
+
+  for (const event of sortedEvents) {
+    const output = event.outputEventId ? byId.get(event.outputEventId) : undefined;
+    if (output) {
+      addEdge(event, output, output.status === "failed" ? "failed_by" : "same_call", "deterministic", `Function call ${event.callId ?? event.id} produced this output.`, event.callId);
+    }
+  }
+
+  for (const prompt of sortedEvents.filter((event) => event.kind === "user_prompt")) {
+    const afterPrompt = sortedEvents.filter((event) => isAfter(event, prompt) && event.sessionId === prompt.sessionId);
+    addEdge(
+      prompt,
+      afterPrompt.find((event) => event.lane === "Architecture" && (event.kind === "file_change" || event.kind === "tool_call")),
+      "updates_design",
+      "inferred",
+      "First architecture or design artifact after this prompt in the same session.",
+      prompt.title
+    );
+    addEdge(
+      prompt,
+      afterPrompt.find((event) => event.lane === "Code" && (event.kind === "file_change" || event.toolName === "git")),
+      "implements_prompt",
+      "inferred",
+      "First code change after this prompt in the same session.",
+      prompt.title
+    );
+  }
+
+  for (const event of sortedEvents) {
+    const laterInSession = sortedEvents.filter((candidate) => isAfter(candidate, event) && candidate.sessionId === event.sessionId);
+    if ((event.lane === "Code" || event.lane === "Architecture") && event.status !== "failed") {
+      addEdge(
+        event,
+        laterInSession.find((candidate) => candidate.lane === "Verification" && candidate.status === "success"),
+        "verified_by",
+        "inferred",
+        "Nearest successful verification after this change in the same session."
+      );
+      addEdge(
+        event,
+        laterInSession.find((candidate) => candidate.toolName === "git" || Boolean(candidate.commitHash)),
+        "committed_as",
+        "deterministic",
+        "Nearest git commit after this change in the same session."
+      );
+    }
+
+    if (event.status === "failed") {
+      addEdge(
+        event,
+        laterInSession.find(isRetryEvent),
+        "retried_by",
+        "inferred",
+        "A later agent message or command indicates the failed step was retried."
+      );
+    } else {
+      addEdge(
+        event,
+        laterInSession.find((candidate) => candidate.status === "failed" && (candidate.lane === "Risks" || candidate.lane === "Verification")),
+        "failed_by",
+        "inferred",
+        "Nearest failed verification or risk event after this step in the same session."
+      );
+    }
+  }
+
+  return [...edges.values()].sort((a, b) => {
+    const fromDelta = (byId.get(a.fromEventId)?.timestamp ?? "").localeCompare(byId.get(b.fromEventId)?.timestamp ?? "");
+    return fromDelta || (byId.get(a.toEventId)?.timestamp ?? "").localeCompare(byId.get(b.toEventId)?.timestamp ?? "") || a.type.localeCompare(b.type);
+  });
 }
 
 export function groupEpisodes(projectId: string, events: TimelineEvent[]): Episode[] {
@@ -59,6 +169,14 @@ function minutesBetween(left: string, right: string): number {
     return 0;
   }
   return Math.abs(differenceInMinutes(b, a));
+}
+
+function isAfter(candidate: TimelineEvent, base: TimelineEvent): boolean {
+  return candidate.timestamp > base.timestamp || (candidate.timestamp === base.timestamp && candidate.id > base.id);
+}
+
+function isRetryEvent(event: TimelineEvent): boolean {
+  return /\bretry\b|\bretrying\b|重试|再次尝试/i.test(`${event.title}\n${event.detail ?? ""}`);
 }
 
 export function makePlaceholderDate(seed: string): string {

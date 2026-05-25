@@ -28,6 +28,31 @@ test("scans fixture logs, renders timeline, opens replay, and toggles theme", as
       files: [],
       rawEventRefId: `raw-${offset + index}`
     }));
+    const causalEdges =
+      offset === 300
+        ? [
+            {
+              id: "edge-300-301",
+              projectId: "project-fixture",
+              fromEventId: "event-300",
+              toEventId: "event-301",
+              type: "verified_by",
+              confidence: "inferred",
+              reason: "Nearest successful verification after this change in the same session.",
+              evidence: null
+            },
+            {
+              id: "edge-299-300",
+              projectId: "project-fixture",
+              fromEventId: "event-299",
+              toEventId: "event-300",
+              type: "implements_prompt",
+              confidence: "inferred",
+              reason: "First code change after this prompt in the same session.",
+              evidence: "Timeline event 299"
+            }
+          ]
+        : [];
 
     await route.fulfill({
       contentType: "application/json",
@@ -53,6 +78,7 @@ test("scans fixture logs, renders timeline, opens replay, and toggles theme", as
           }
         ],
         events,
+        causalEdges,
         totalEvents: 340,
         limit: 300,
         offset
@@ -119,7 +145,13 @@ test("scans fixture logs, renders timeline, opens replay, and toggles theme", as
   await page.getByRole("button", { name: "Load more" }).click();
   await expect(page.getByText("301-340 of 340")).toBeVisible();
   await expect(page.getByText("Run Ledger")).toBeVisible();
+  await page.getByRole("button", { name: "Show causal paths" }).click();
+  await expect(page.getByLabel("Causal path")).toBeVisible();
   await page.getByRole("button", { name: "Timeline event 300" }).click();
+  await expect(page.getByText("1 causal links on this page")).toBeVisible();
+  await expect(page.locator('[data-event-id="event-301"]')).toHaveClass(/causal-downstream/);
+  await expect(page.getByRole("heading", { name: "Causal Links" })).toBeVisible();
+  await expect(page.getByText("verified by")).toBeVisible();
   await expect(page.getByText("redacted command output")).toBeVisible();
   await expect(page.getByText("{\"token\":\"[REDACTED]\"}")).toBeVisible();
   expect(evidenceRequested).toBe(true);
