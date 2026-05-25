@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { parseCodexJsonlFile } from "../core/parser";
 import { normalizeCodexLines } from "../core/normalizer";
 import { IngestJob } from "../core/types";
 import { SuperViewDatabase } from "../storage/database";
+import { resolveCodexHome } from "../storage/paths";
+import { parseCodexHistoryJsonlFile } from "./history";
 import { scanRolloutFiles } from "./scanner";
-import { getRepoRoot } from "./git-provider";
+import { getCommits, getRepoRoot } from "./git-provider";
 
 export class IngestService {
   private running = new Set<string>();
@@ -21,7 +24,8 @@ export class IngestService {
       totalFiles: 0,
       processedFiles: 0,
       totalEvents: 0,
-      errors: []
+      errors: [],
+      skippedFiles: 0
     };
     this.db.upsertJob(job);
     void this.run(job.id, codexHome);
@@ -41,6 +45,7 @@ export class IngestService {
     try {
       job.status = "running";
       const files = await scanRolloutFiles(codexHome);
+      const historyBySessionId = await loadHistoryBySessionId(codexHome);
       job.totalFiles = files.length;
       this.db.upsertJob(job);
 
@@ -49,16 +54,44 @@ export class IngestService {
 
       for (const file of files) {
         try {
+          const fileStat = await stat(file);
+          const previous = this.db.getIngestedFile(file);
+          if (previous && previous.mtimeMs === fileStat.mtimeMs && previous.sizeBytes === fileStat.size) {
+            job.skippedFiles = (job.skippedFiles ?? 0) + 1;
+            job.processedFiles += 1;
+            this.db.upsertJob(job);
+            continue;
+          }
+
           const lines = await parseCodexJsonlFile(file);
           const meta = lines.find((line) => line.type === "session_meta");
           const cwd = extractCwd(meta?.payload);
           const repoRoot = cwd ? await getRepoRoot(cwd) : null;
           const bundle = normalizeCodexLines(lines, { repoRoot });
           if (bundle) {
+            bundle.historyPrompts = historyBySessionId.get(bundle.session.id) ?? [];
+            bundle.gitCommits = repoRoot ? await getCommits(repoRoot, bundle.session.startedAt, bundle.session.endedAt) : [];
             this.db.upsertBundle(bundle);
+            this.db.upsertIngestedFile({
+              path: file,
+              mtimeMs: fileStat.mtimeMs,
+              sizeBytes: fileStat.size,
+              sha256: lines.at(-1)?.sha256 ?? null,
+              sessionId: bundle.session.id,
+              processedAt: new Date().toISOString()
+            });
             projectCount += 1;
             sessionCount += 1;
             job.totalEvents += bundle.events.length;
+          } else {
+            this.db.upsertIngestedFile({
+              path: file,
+              mtimeMs: fileStat.mtimeMs,
+              sizeBytes: fileStat.size,
+              sha256: lines.at(-1)?.sha256 ?? null,
+              sessionId: null,
+              processedAt: new Date().toISOString()
+            });
           }
         } catch (error) {
           job.errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -80,6 +113,15 @@ export class IngestService {
     } finally {
       this.running.delete(jobId);
     }
+  }
+}
+
+async function loadHistoryBySessionId(codexHome?: string) {
+  try {
+    const sourcePath = `${codexHome ?? resolveCodexHome()}/history.jsonl`;
+    return (await parseCodexHistoryJsonlFile(sourcePath)).bySessionId;
+  } catch {
+    return new Map();
   }
 }
 

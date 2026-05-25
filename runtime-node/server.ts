@@ -1,4 +1,5 @@
 import express from "express";
+import { TimelineLane, TimelineQuery } from "../core/types";
 import { SuperViewDatabase } from "../storage/database";
 import { IngestService } from "./ingest";
 
@@ -35,12 +36,37 @@ export function createServer() {
   });
 
   app.get("/api/projects/:id/timeline", (req, res) => {
-    const timeline = db.getTimeline(req.params.id);
+    const query = parseTimelineQuery(req.query);
+    const timeline = db.getTimeline(req.params.id, query);
     if (!timeline) {
       res.status(404).json({ error: "project not found" });
       return;
     }
     res.json(timeline);
+  });
+
+  app.get("/api/events/:id/evidence", (req, res) => {
+    const evidence = db.getEventEvidence(req.params.id);
+    if (!evidence) {
+      res.status(404).json({ error: "event not found" });
+      return;
+    }
+    res.json({
+      event: evidence.event,
+      artifacts: evidence.artifacts,
+      rawEvent: evidence.rawEvent
+        ? {
+            id: evidence.rawEvent.id,
+            sessionId: evidence.rawEvent.sessionId,
+            lineNo: evidence.rawEvent.lineNo,
+            timestamp: evidence.rawEvent.timestamp,
+            type: evidence.rawEvent.type,
+            sourcePath: evidence.rawEvent.sourcePath,
+            sha256: evidence.rawEvent.sha256,
+            redactedPayload: safeJsonParse(evidence.rawEvent.redactedPayloadJson)
+          }
+        : null
+    });
   });
 
   app.get("/api/runs/:id", (req, res) => {
@@ -53,6 +79,39 @@ export function createServer() {
   });
 
   return app;
+}
+
+const TIMELINE_LANES: TimelineLane[] = ["Product", "Architecture", "Code", "Agent Runs", "Verification", "Risks"];
+
+function parseTimelineQuery(query: Record<string, unknown>): TimelineQuery {
+  const parsed: TimelineQuery = {};
+  const limit = firstQueryValue(query.limit);
+  const offset = firstQueryValue(query.offset);
+  const lane = firstQueryValue(query.lane);
+  const since = firstQueryValue(query.since);
+  const until = firstQueryValue(query.until);
+
+  if (limit !== undefined) parsed.limit = Number(limit);
+  if (offset !== undefined) parsed.offset = Number(offset);
+  if (lane && TIMELINE_LANES.includes(lane as TimelineLane)) parsed.lane = lane as TimelineLane;
+  if (since) parsed.since = since;
+  if (until) parsed.until = until;
+  return parsed;
+}
+
+function firstQueryValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : undefined;
+  }
+  return typeof value === "string" ? value : undefined;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 if (process.env.NODE_ENV !== "test") {

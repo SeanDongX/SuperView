@@ -3,16 +3,21 @@ import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import {
   Artifact,
+  CodexHistoryPrompt,
+  Episode,
+  EventEvidence,
+  GitCommitRecord,
   IngestJob,
   NormalizedBundle,
   ProjectRecord,
   RawEventRef,
   RunReplay,
   SessionRecord,
+  TimelineQuery,
   TimelineEvent,
   TurnRecord
 } from "../core/types";
-import { buildProjectTimeline } from "../core/timeline";
+import { buildProjectTimeline, groupEpisodes } from "../core/timeline";
 import { buildReplayNodes } from "../core/replay";
 import { resolveDatabasePath } from "./paths";
 
@@ -101,6 +106,9 @@ export class SuperViewDatabase {
         status TEXT NOT NULL,
         files_json TEXT NOT NULL,
         raw_event_ref_id TEXT,
+        duration_ms INTEGER,
+        output_event_id TEXT,
+        commit_hash TEXT,
         FOREIGN KEY(project_id) REFERENCES projects(id),
         FOREIGN KEY(session_id) REFERENCES sessions(id)
       );
@@ -115,6 +123,53 @@ export class SuperViewDatabase {
         FOREIGN KEY(event_id) REFERENCES events(id)
       );
 
+      CREATE TABLE IF NOT EXISTS history_prompts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        text TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        line_no INTEGER NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS git_commits (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        repo_root TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        short_hash TEXT NOT NULL,
+        author_name TEXT,
+        author_email TEXT,
+        timestamp TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        files_changed INTEGER NOT NULL,
+        insertions INTEGER NOT NULL,
+        deletions INTEGER NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS episodes (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        status TEXT NOT NULL,
+        event_ids_json TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS ingested_files (
+        path TEXT PRIMARY KEY,
+        mtime_ms REAL NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT,
+        session_id TEXT,
+        processed_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS ingest_jobs (
         id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
@@ -123,10 +178,15 @@ export class SuperViewDatabase {
         total_files INTEGER NOT NULL,
         processed_files INTEGER NOT NULL,
         total_events INTEGER NOT NULL,
+        skipped_files INTEGER NOT NULL DEFAULT 0,
         errors_json TEXT NOT NULL
       );
     `);
 
+    this.ensureColumn("ingest_jobs", "skipped_files", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("events", "duration_ms", "INTEGER");
+    this.ensureColumn("events", "output_event_id", "TEXT");
+    this.ensureColumn("events", "commit_hash", "TEXT");
     this.db.prepare("INSERT OR REPLACE INTO schema_meta(version, updated_at) VALUES (?, ?)").run(SCHEMA_VERSION, new Date().toISOString());
   }
 
@@ -137,9 +197,20 @@ export class SuperViewDatabase {
       for (const turn of bundle.turns) this.upsertTurn(turn);
       for (const raw of bundle.rawEventRefs) this.upsertRawEvent(raw);
       for (const event of bundle.events) this.upsertEvent(event);
+      for (const prompt of bundle.historyPrompts ?? []) this.upsertHistoryPrompt(prompt);
+      for (const commit of bundle.gitCommits ?? []) this.upsertGitCommit(bundle.project.id, bundle.session.id, commit);
       for (const artifact of bundle.artifacts) this.upsertArtifact(artifact);
+      for (const artifact of this.gitArtifactsForCommits(bundle.project.id, bundle.gitCommits ?? [])) this.upsertArtifact(artifact);
+      this.upsertEpisodes(groupEpisodes(bundle.project.id, bundle.events));
     });
     tx();
+  }
+
+  private ensureColumn(table: string, column: string, definition: string) {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((row) => row.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   upsertProject(project: ProjectRecord) {
@@ -200,10 +271,62 @@ export class SuperViewDatabase {
   upsertEvent(event: TimelineEvent) {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO events(id, project_id, session_id, turn_id, timestamp, kind, lane, title, detail, tool_name, call_id, status, files_json, raw_event_ref_id)
-         VALUES (@id, @projectId, @sessionId, @turnId, @timestamp, @kind, @lane, @title, @detail, @toolName, @callId, @status, @filesJson, @rawEventRefId)`
+        `INSERT OR REPLACE INTO events(id, project_id, session_id, turn_id, timestamp, kind, lane, title, detail, tool_name, call_id, status, files_json, raw_event_ref_id, duration_ms, output_event_id, commit_hash)
+         VALUES (@id, @projectId, @sessionId, @turnId, @timestamp, @kind, @lane, @title, @detail, @toolName, @callId, @status, @filesJson, @rawEventRefId, @durationMs, @outputEventId, @commitHash)`
       )
-      .run({ ...event, filesJson: JSON.stringify(event.files) });
+      .run({ ...event, filesJson: JSON.stringify(event.files), durationMs: event.durationMs ?? null, outputEventId: event.outputEventId ?? null, commitHash: event.commitHash ?? null });
+  }
+
+  upsertHistoryPrompt(prompt: CodexHistoryPrompt) {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO history_prompts(id, session_id, ts, text, source_path, line_no)
+         VALUES (@id, @sessionId, @ts, @text, @sourcePath, @lineNo)`
+      )
+      .run({
+        id: `${prompt.sessionId}:${prompt.lineNo}`,
+        ...prompt
+      });
+  }
+
+  upsertGitCommit(projectId: string, sessionId: string, commit: GitCommitRecord) {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO git_commits(id, project_id, repo_root, hash, short_hash, author_name, author_email, timestamp, subject, files_changed, insertions, deletions)
+         VALUES (@id, @projectId, @repoRoot, @hash, @shortHash, @authorName, @authorEmail, @timestamp, @subject, @filesChanged, @insertions, @deletions)`
+      )
+      .run({ ...commit, projectId, id: `${projectId}:${commit.hash}` });
+
+    this.upsertEvent({
+      id: `git_${projectId}_${commit.shortHash}`,
+      projectId,
+      sessionId,
+      turnId: null,
+      timestamp: commit.timestamp,
+      kind: "file_change",
+      lane: "Code",
+      title: `Git commit ${commit.shortHash}: ${commit.subject}`,
+      detail: `${commit.filesChanged} files, +${commit.insertions}/-${commit.deletions}`,
+      toolName: "git",
+      callId: null,
+      status: "success",
+      files: [],
+      rawEventRefId: null,
+      durationMs: null,
+      outputEventId: null,
+      commitHash: commit.hash
+    });
+  }
+
+  private gitArtifactsForCommits(projectId: string, commits: GitCommitRecord[]): Artifact[] {
+    return commits.map((commit) => ({
+      id: `artifact_git_${projectId}_${commit.hash}`,
+      eventId: `git_${projectId}_${commit.shortHash}`,
+      type: "git",
+      path: commit.repoRoot,
+      excerpt: `${commit.hash}\n${commit.subject}\n${commit.filesChanged} files changed, ${commit.insertions} insertions, ${commit.deletions} deletions`,
+      sha256: commit.hash
+    }));
   }
 
   upsertArtifact(artifact: Artifact) {
@@ -215,13 +338,52 @@ export class SuperViewDatabase {
       .run(artifact);
   }
 
+  upsertEpisodes(episodes: Episode[]) {
+    const tx = this.db.transaction(() => {
+      for (const episode of episodes) {
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO episodes(id, project_id, started_at, ended_at, title, summary, status, event_ids_json)
+             VALUES (@id, @projectId, @startedAt, @endedAt, @title, @summary, @status, @eventIdsJson)`
+          )
+          .run({ ...episode, eventIdsJson: JSON.stringify(episode.eventIds) });
+      }
+    });
+    tx();
+  }
+
   upsertJob(job: IngestJob) {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO ingest_jobs(id, status, started_at, finished_at, total_files, processed_files, total_events, errors_json)
-         VALUES (@id, @status, @startedAt, @finishedAt, @totalFiles, @processedFiles, @totalEvents, @errorsJson)`
+        `INSERT OR REPLACE INTO ingest_jobs(id, status, started_at, finished_at, total_files, processed_files, total_events, skipped_files, errors_json)
+         VALUES (@id, @status, @startedAt, @finishedAt, @totalFiles, @processedFiles, @totalEvents, @skippedFiles, @errorsJson)`
       )
-      .run({ ...job, errorsJson: JSON.stringify(job.errors) });
+      .run({ ...job, skippedFiles: job.skippedFiles ?? 0, errorsJson: JSON.stringify(job.errors) });
+  }
+
+  getIngestedFile(path: string): { path: string; mtimeMs: number; sizeBytes: number; sha256: string | null; sessionId: string | null; processedAt: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT path, mtime_ms as mtimeMs, size_bytes as sizeBytes, sha256, session_id as sessionId, processed_at as processedAt
+         FROM ingested_files WHERE path = ?`
+      )
+      .get(path) as { path: string; mtimeMs: number; sizeBytes: number; sha256: string | null; sessionId: string | null; processedAt: string } | undefined;
+    return row ?? null;
+  }
+
+  upsertIngestedFile(file: { path: string; mtimeMs: number; sizeBytes: number; sha256?: string | null; sessionId?: string | null; processedAt: string }) {
+    this.db
+      .prepare(
+        `INSERT INTO ingested_files(path, mtime_ms, size_bytes, sha256, session_id, processed_at)
+         VALUES (@path, @mtimeMs, @sizeBytes, @sha256, @sessionId, @processedAt)
+         ON CONFLICT(path) DO UPDATE SET
+           mtime_ms=excluded.mtime_ms,
+           size_bytes=excluded.size_bytes,
+           sha256=excluded.sha256,
+           session_id=excluded.session_id,
+           processed_at=excluded.processed_at`
+      )
+      .run({ ...file, sha256: file.sha256 ?? null, sessionId: file.sessionId ?? null });
   }
 
   listProjects(): ProjectRecord[] {
@@ -238,21 +400,70 @@ export class SuperViewDatabase {
     );
   }
 
-  listEvents(projectId: string): TimelineEvent[] {
+  listEvents(projectId: string, query: TimelineQuery = {}): TimelineEvent[] {
+    const { where, params } = this.timelineWhere(projectId, query);
+    const limit = normalizeLimit(query.limit);
+    const offset = Math.max(0, Math.trunc(query.offset ?? 0));
+    const pagination = query.limit === undefined && query.offset === undefined ? "" : " LIMIT ? OFFSET ?";
+    const paginationParams = pagination ? [limit, offset] : [];
     const rows = this.db
       .prepare(
         `SELECT id, project_id as projectId, session_id as sessionId, turn_id as turnId, timestamp, kind, lane, title, detail,
-                tool_name as toolName, call_id as callId, status, files_json as filesJson, raw_event_ref_id as rawEventRefId
-         FROM events WHERE project_id = ? ORDER BY timestamp ASC`
+                tool_name as toolName, call_id as callId, status, files_json as filesJson, raw_event_ref_id as rawEventRefId,
+                duration_ms as durationMs, output_event_id as outputEventId, commit_hash as commitHash
+         FROM events ${where} ORDER BY timestamp ASC${pagination}`
       )
-      .all(projectId) as Array<Omit<TimelineEvent, "files"> & { filesJson: string }>;
+      .all(...params, ...paginationParams) as Array<Omit<TimelineEvent, "files"> & { filesJson: string }>;
     return rows.map((row) => ({ ...row, files: JSON.parse(row.filesJson) as string[] }));
   }
 
-  getTimeline(projectId: string) {
+  countEvents(projectId: string, query: TimelineQuery = {}): number {
+    const { where, params } = this.timelineWhere(projectId, query);
+    const row = this.db.prepare(`SELECT COUNT(*) as total FROM events ${where}`).get(...params) as { total: number };
+    return row.total;
+  }
+
+  getTimeline(projectId: string, query: TimelineQuery = {}) {
     const project = this.getProject(projectId);
     if (!project) return null;
-    return buildProjectTimeline(project, this.listEvents(projectId));
+    const events = this.listEvents(projectId, query);
+    const timeline = buildProjectTimeline(project, events);
+    return {
+      ...timeline,
+      episodes: this.listEpisodes(projectId),
+      totalEvents: this.countEvents(projectId, query),
+      limit: normalizeLimit(query.limit),
+      offset: Math.max(0, Math.trunc(query.offset ?? 0))
+    };
+  }
+
+  private timelineWhere(projectId: string, query: TimelineQuery) {
+    const clauses = ["project_id = ?"];
+    const params: unknown[] = [projectId];
+    if (query.lane) {
+      clauses.push("lane = ?");
+      params.push(query.lane);
+    }
+    if (query.since) {
+      clauses.push("timestamp >= ?");
+      params.push(query.since);
+    }
+    if (query.until) {
+      clauses.push("timestamp <= ?");
+      params.push(query.until);
+    }
+    return { where: `WHERE ${clauses.join(" AND ")}`, params };
+  }
+
+  listEpisodes(projectId: string): Episode[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, project_id as projectId, started_at as startedAt, ended_at as endedAt,
+                title, summary, status, event_ids_json as eventIdsJson
+         FROM episodes WHERE project_id = ? ORDER BY started_at ASC`
+      )
+      .all(projectId) as Array<Omit<Episode, "eventIds"> & { eventIdsJson: string }>;
+    return rows.map((row) => ({ ...row, eventIds: JSON.parse(row.eventIdsJson) as string[] }));
   }
 
   listSessions(projectId?: string): SessionRecord[] {
@@ -277,7 +488,7 @@ export class SuperViewDatabase {
   getRunReplay(sessionId: string): RunReplay | null {
     const session = this.getSession(sessionId);
     if (!session) return null;
-    const events = this.listEvents(session.projectId).filter((event) => event.sessionId === sessionId);
+    const events = this.listEventsForSession(session.projectId, sessionId);
     const artifacts = this.listArtifactsForEvents(events.map((event) => event.id));
     return {
       session,
@@ -295,14 +506,65 @@ export class SuperViewDatabase {
       .all(...eventIds) as Artifact[];
   }
 
+  listEventsForSession(projectId: string, sessionId: string): TimelineEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, project_id as projectId, session_id as sessionId, turn_id as turnId, timestamp, kind, lane, title, detail,
+                tool_name as toolName, call_id as callId, status, files_json as filesJson, raw_event_ref_id as rawEventRefId,
+                duration_ms as durationMs, output_event_id as outputEventId, commit_hash as commitHash
+         FROM events WHERE project_id = ? AND session_id = ? ORDER BY timestamp ASC`
+      )
+      .all(projectId, sessionId) as Array<Omit<TimelineEvent, "files"> & { filesJson: string }>;
+    return rows.map((row) => ({ ...row, files: JSON.parse(row.filesJson) as string[] }));
+  }
+
+  getEvent(eventId: string): TimelineEvent | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, project_id as projectId, session_id as sessionId, turn_id as turnId, timestamp, kind, lane, title, detail,
+                tool_name as toolName, call_id as callId, status, files_json as filesJson, raw_event_ref_id as rawEventRefId,
+                duration_ms as durationMs, output_event_id as outputEventId, commit_hash as commitHash
+         FROM events WHERE id = ?`
+      )
+      .get(eventId) as (Omit<TimelineEvent, "files"> & { filesJson: string }) | undefined;
+    return row ? { ...row, files: JSON.parse(row.filesJson) as string[] } : null;
+  }
+
+  getRawEvent(rawEventRefId: string): RawEventRef | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, session_id as sessionId, line_no as lineNo, timestamp, type, redacted_payload_json as redactedPayloadJson,
+                source_path as sourcePath, sha256
+         FROM raw_event_refs WHERE id = ?`
+      )
+      .get(rawEventRefId) as RawEventRef | undefined;
+    return row ?? null;
+  }
+
+  getEventEvidence(eventId: string): EventEvidence | null {
+    const event = this.getEvent(eventId);
+    if (!event) return null;
+    return {
+      event,
+      artifacts: this.listArtifactsForEvents([event.id]),
+      rawEvent: event.rawEventRefId ? this.getRawEvent(event.rawEventRefId) : null
+    };
+  }
+
   getJob(jobId: string): IngestJob | null {
     const row = this.db
       .prepare(
         `SELECT id, status, started_at as startedAt, finished_at as finishedAt, total_files as totalFiles,
                 processed_files as processedFiles, total_events as totalEvents, errors_json as errorsJson
+                , skipped_files as skippedFiles
          FROM ingest_jobs WHERE id = ?`
       )
       .get(jobId) as (Omit<IngestJob, "errors"> & { errorsJson: string }) | undefined;
     return row ? { ...row, errors: JSON.parse(row.errorsJson) as string[] } : null;
   }
+}
+
+function normalizeLimit(limit: number | undefined): number {
+  if (limit === undefined) return 200;
+  return Math.min(500, Math.max(1, Math.trunc(limit)));
 }
