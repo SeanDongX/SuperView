@@ -501,11 +501,15 @@ function ConversationTurn({
         </div>
       </div>
 
-      <button className={`conversation-message user ${prompt?.id === selectedEventId ? "selected" : ""}`} onClick={() => prompt ? onSelectEvent(prompt) : undefined}>
-        <span className="message-meta">User</span>
-        <strong>{journey.title}</strong>
-        <p>{promptText}</p>
-      </button>
+      <ChatBubble
+        variant="user"
+        label="User"
+        title={journey.title}
+        text={promptText}
+        selected={prompt?.id === selectedEventId}
+        disabled={!prompt}
+        onSelect={() => prompt ? onSelectEvent(prompt) : undefined}
+      />
 
       <button className="detail-toggle" onClick={onToggleDetails}>{expanded ? "隐藏细节" : "查看细节"}</button>
 
@@ -553,11 +557,76 @@ function ConversationTurn({
         </div>
       ) : null}
 
-      <button className={`conversation-message codex ${assistantMessage?.id === selectedEventId ? "selected" : ""}`} onClick={() => assistantMessage ? onSelectEvent(assistantMessage) : undefined}>
-        <span className="message-meta">Codex CLI</span>
-        <p>{codexOutput}</p>
-      </button>
+      <ChatBubble
+        variant="codex"
+        label="Codex CLI"
+        text={codexOutput}
+        selected={assistantMessage?.id === selectedEventId}
+        disabled={!assistantMessage}
+        onSelect={() => assistantMessage ? onSelectEvent(assistantMessage) : undefined}
+      />
     </article>
+  );
+}
+
+function ChatBubble({
+  variant,
+  label,
+  title,
+  text,
+  selected,
+  disabled,
+  onSelect
+}: {
+  variant: "user" | "codex";
+  label: string;
+  title?: string;
+  text: string;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+
+    const measure = () => {
+      setCanExpand(body.scrollHeight > 250);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [text, title]);
+
+  useEffect(() => {
+    if (!canExpand) setExpanded(false);
+  }, [canExpand]);
+
+  return (
+    <div className={`message-row ${variant}`}>
+      <span className="message-avatar" aria-hidden="true">{variant === "user" ? "U" : "C"}</span>
+      <div className="message-stack">
+        <button className={`conversation-message ${variant} ${selected ? "selected" : ""}`} disabled={disabled} onClick={onSelect}>
+          <span className="message-meta">{label}</span>
+          <div ref={bodyRef} className="message-body" data-expanded={expanded ? "true" : "false"}>
+            {title ? <strong>{title}</strong> : null}
+            <p>{text}</p>
+          </div>
+          {canExpand && !expanded ? <span className="message-fade" aria-hidden="true" /> : null}
+        </button>
+        {canExpand ? (
+          <button className="message-expand-toggle" onClick={() => setExpanded((current) => !current)}>
+            {expanded ? "收起" : "展开"}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

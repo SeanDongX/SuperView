@@ -268,7 +268,10 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
       kind: index === 0 ? "user_prompt" : index % 3 === 0 ? "tool_call" : "assistant_message",
       lane: index === 0 ? "Product" : index % 2 === 0 ? "Code" : "Agent Runs",
       title: index === 0 ? `User task ${offset}` : index === 1 ? `Codex CLI output ${offset}` : `Loaded detail event ${offset + index}`,
-      detail: index === 1 ? `Codex completed task ${offset} in CLI output.` : `Loaded task detail ${offset + index}`,
+      detail:
+        index === 1
+          ? `Codex completed task ${offset} in CLI output.${offset === 300 ? ` ${Array.from({ length: 80 }, (_, repeatIndex) => `Long CLI output line ${repeatIndex} for truncation verification.`).join("\n")}` : ""}`
+          : `Loaded task detail ${offset + index}`,
       toolName: index % 3 === 0 && index !== 0 ? "exec_command" : null,
       callId: index % 3 === 0 && index !== 0 ? `call-${offset + index}` : null,
       status: "success",
@@ -354,9 +357,9 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
   await expect(page.locator(".conversation-turn").filter({ hasText: "Build task journey from input 75" })).toBeVisible();
   await expect(page.locator(".conversation-turn").filter({ hasText: "Build task journey from input 150" })).toBeVisible();
   await expect(page.getByRole("button", { name: "查看细节" })).toHaveCount(4);
-  await expect(page.locator(".conversation-turn").first().locator(":scope > .conversation-message.user")).toBeVisible();
+  await expect(page.locator(".conversation-turn").first().locator(":scope > .message-row.user .conversation-message.user")).toBeVisible();
   await expect(page.locator(".conversation-turn").first().locator(":scope > .detail-toggle")).toBeVisible();
-  await expect(page.locator(".conversation-turn").first().locator(":scope > .conversation-message.codex")).toBeVisible();
+  await expect(page.locator(".conversation-turn").first().locator(":scope > .message-row.codex .conversation-message.codex")).toBeVisible();
   await expect(page.getByText("Loaded task detail 2")).toHaveCount(0);
   await expect(page.getByText("Agent Trace", { exact: true })).toHaveCount(0);
   await expect(page.locator(".lane-label")).toHaveCount(0);
@@ -379,6 +382,14 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
   await page.locator(".conversation-turn").filter({ hasText: "User task 300" }).getByRole("button", { name: "查看细节" }).click();
   await expect.poll(() => journeyDetailRequests.filter((id) => id === "task-300").length).toBe(1);
   await expect(page.getByText("Codex completed task 300 in CLI output.")).toBeVisible();
+  const task300CodexBody = page.locator(".conversation-turn").filter({ hasText: "User task 300" }).locator(".message-row.codex .message-body");
+  await expect(task300CodexBody).toHaveAttribute("data-expanded", "false");
+  await expect.poll(async () => Math.round((await task300CodexBody.boundingBox())?.height ?? 0)).toBeLessThanOrEqual(250);
+  await page.locator(".conversation-turn").filter({ hasText: "User task 300" }).getByRole("button", { name: "展开" }).click();
+  await expect(task300CodexBody).toHaveAttribute("data-expanded", "true");
+  await expect.poll(async () => Math.round((await task300CodexBody.boundingBox())?.height ?? 0)).toBeGreaterThan(250);
+  await page.locator(".conversation-turn").filter({ hasText: "User task 300" }).getByRole("button", { name: "收起" }).click();
+  await expect(task300CodexBody).toHaveAttribute("data-expanded", "false");
   await expect(page.getByText("Background Work", { exact: true })).toBeVisible();
   await expect(page.getByText("Log", { exact: true })).toBeVisible();
   await expect(page.getByText("Loaded task detail 302")).toBeVisible();
