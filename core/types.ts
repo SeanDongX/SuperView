@@ -197,6 +197,16 @@ export interface Artifact {
 export interface IngestJob {
   id: string;
   status: "queued" | "running" | "completed" | "failed";
+  phase:
+    | "queued"
+    | "scanning"
+    | "diffing"
+    | "loading_history"
+    | "parsing"
+    | "normalizing"
+    | "writing"
+    | "completed"
+    | "failed";
   startedAt: string;
   finishedAt: string | null;
   totalFiles: number;
@@ -204,6 +214,13 @@ export interface IngestJob {
   totalEvents: number;
   errors: string[];
   skippedFiles?: number;
+  candidateFiles?: number;
+  changedFiles?: number;
+  processedBytes?: number;
+  totalBytes?: number;
+  currentFile?: string | null;
+  workerPid?: number | null;
+  processorVersion?: string | null;
 }
 
 export interface IngestResult {

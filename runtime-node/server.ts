@@ -14,8 +14,8 @@ export function createServer() {
   });
 
   app.post("/api/ingest", (req, res) => {
-    const job = ingest.start(typeof req.body?.codexHome === "string" ? req.body.codexHome : undefined);
-    res.status(202).json({ jobId: job.id });
+    const result = ingest.start(typeof req.body?.codexHome === "string" ? req.body.codexHome : undefined);
+    res.status(202).json({ jobId: result.job.id, alreadyRunning: result.alreadyRunning, job: result.job });
   });
 
   app.get("/api/ingest/jobs/:id", (req, res) => {

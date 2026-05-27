@@ -37,6 +37,7 @@ export class SuperViewDatabase {
     mkdirSync(dirname(databasePath), { recursive: true });
     this.db = new Database(databasePath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("foreign_keys = ON");
     this.migrate();
   }
@@ -182,17 +183,33 @@ export class SuperViewDatabase {
       CREATE TABLE IF NOT EXISTS ingest_jobs (
         id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
+        phase TEXT NOT NULL DEFAULT 'queued',
         started_at TEXT NOT NULL,
         finished_at TEXT,
         total_files INTEGER NOT NULL,
         processed_files INTEGER NOT NULL,
         total_events INTEGER NOT NULL,
         skipped_files INTEGER NOT NULL DEFAULT 0,
+        candidate_files INTEGER NOT NULL DEFAULT 0,
+        changed_files INTEGER NOT NULL DEFAULT 0,
+        processed_bytes INTEGER NOT NULL DEFAULT 0,
+        total_bytes INTEGER NOT NULL DEFAULT 0,
+        current_file TEXT,
+        worker_pid INTEGER,
+        processor_version TEXT,
         errors_json TEXT NOT NULL
       );
     `);
 
+    this.ensureColumn("ingest_jobs", "phase", "TEXT NOT NULL DEFAULT 'queued'");
     this.ensureColumn("ingest_jobs", "skipped_files", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("ingest_jobs", "candidate_files", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("ingest_jobs", "changed_files", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("ingest_jobs", "processed_bytes", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("ingest_jobs", "total_bytes", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("ingest_jobs", "current_file", "TEXT");
+    this.ensureColumn("ingest_jobs", "worker_pid", "INTEGER");
+    this.ensureColumn("ingest_jobs", "processor_version", "TEXT");
     this.ensureColumn("events", "duration_ms", "INTEGER");
     this.ensureColumn("events", "output_event_id", "TEXT");
     this.ensureColumn("events", "commit_hash", "TEXT");
@@ -373,10 +390,22 @@ export class SuperViewDatabase {
   upsertJob(job: IngestJob) {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO ingest_jobs(id, status, started_at, finished_at, total_files, processed_files, total_events, skipped_files, errors_json)
-         VALUES (@id, @status, @startedAt, @finishedAt, @totalFiles, @processedFiles, @totalEvents, @skippedFiles, @errorsJson)`
+        `INSERT OR REPLACE INTO ingest_jobs(id, status, phase, started_at, finished_at, total_files, processed_files, total_events, skipped_files, candidate_files, changed_files, processed_bytes, total_bytes, current_file, worker_pid, processor_version, errors_json)
+         VALUES (@id, @status, @phase, @startedAt, @finishedAt, @totalFiles, @processedFiles, @totalEvents, @skippedFiles, @candidateFiles, @changedFiles, @processedBytes, @totalBytes, @currentFile, @workerPid, @processorVersion, @errorsJson)`
       )
-      .run({ ...job, skippedFiles: job.skippedFiles ?? 0, errorsJson: JSON.stringify(job.errors) });
+      .run({
+        ...job,
+        phase: job.phase ?? phaseForStatus(job.status),
+        skippedFiles: job.skippedFiles ?? 0,
+        candidateFiles: job.candidateFiles ?? 0,
+        changedFiles: job.changedFiles ?? 0,
+        processedBytes: job.processedBytes ?? 0,
+        totalBytes: job.totalBytes ?? 0,
+        currentFile: job.currentFile ?? null,
+        workerPid: job.workerPid ?? null,
+        processorVersion: job.processorVersion ?? null,
+        errorsJson: JSON.stringify(job.errors)
+      });
   }
 
   getIngestedFile(path: string): { path: string; mtimeMs: number; sizeBytes: number; sha256: string | null; sessionId: string | null; processorVersion: string | null; processedAt: string } | null {
@@ -606,14 +635,40 @@ export class SuperViewDatabase {
   getJob(jobId: string): IngestJob | null {
     const row = this.db
       .prepare(
-        `SELECT id, status, started_at as startedAt, finished_at as finishedAt, total_files as totalFiles,
-                processed_files as processedFiles, total_events as totalEvents, errors_json as errorsJson
-                , skipped_files as skippedFiles
+        `SELECT id, status, phase, started_at as startedAt, finished_at as finishedAt, total_files as totalFiles,
+                processed_files as processedFiles, total_events as totalEvents, skipped_files as skippedFiles,
+                candidate_files as candidateFiles, changed_files as changedFiles, processed_bytes as processedBytes,
+                total_bytes as totalBytes, current_file as currentFile, worker_pid as workerPid,
+                processor_version as processorVersion, errors_json as errorsJson
          FROM ingest_jobs WHERE id = ?`
       )
       .get(jobId) as (Omit<IngestJob, "errors"> & { errorsJson: string }) | undefined;
     return row ? { ...row, errors: JSON.parse(row.errorsJson) as string[] } : null;
   }
+
+  getActiveIngestJob(): IngestJob | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, phase, started_at as startedAt, finished_at as finishedAt, total_files as totalFiles,
+                processed_files as processedFiles, total_events as totalEvents, skipped_files as skippedFiles,
+                candidate_files as candidateFiles, changed_files as changedFiles, processed_bytes as processedBytes,
+                total_bytes as totalBytes, current_file as currentFile, worker_pid as workerPid,
+                processor_version as processorVersion, errors_json as errorsJson
+         FROM ingest_jobs
+         WHERE status IN ('queued', 'running')
+         ORDER BY started_at DESC
+         LIMIT 1`
+      )
+      .get() as (Omit<IngestJob, "errors"> & { errorsJson: string }) | undefined;
+    return row ? { ...row, errors: JSON.parse(row.errorsJson) as string[] } : null;
+  }
+}
+
+function phaseForStatus(status: IngestJob["status"]): IngestJob["phase"] {
+  if (status === "completed") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "running") return "scanning";
+  return "queued";
 }
 
 function normalizeLimit(limit: number | undefined): number {

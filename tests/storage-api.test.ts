@@ -20,6 +20,8 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.SUPERVIEW_DATA_DIR;
+  delete process.env.SUPERVIEW_TEST_INGEST_WORKER_FAIL;
+  delete process.env.SUPERVIEW_TEST_INGEST_FILE_DELAY_MS;
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(codexHome, { recursive: true, force: true });
 });
@@ -34,6 +36,8 @@ describe("SuperView API", () => {
     const ingest = await request(app).post("/api/ingest").send({ codexHome });
     expect(ingest.status).toBe(202);
     expect(ingest.body.jobId).toBeTruthy();
+    const job = await waitForJob(app, ingest.body.jobId);
+    expect(job.status).toBe("completed");
   });
 
   it("skips unchanged files, paginates timelines, and returns redacted event evidence", async () => {
@@ -220,6 +224,95 @@ describe("SuperView API", () => {
       rmSync(tokenCodexHome, { recursive: true, force: true });
     }
   });
+
+  it("keeps read APIs responsive while ingesting 300+ rollout files", async () => {
+    const largeCodexHome = createRolloutFixtureCodexHome(320);
+    process.env.SUPERVIEW_TEST_INGEST_FILE_DELAY_MS = "1";
+    try {
+      const app = createServer();
+
+      const ingest = await request(app).post("/api/ingest").send({ codexHome: largeCodexHome });
+      expect(ingest.status).toBe(202);
+      const jobId = runningJobIdFromResponse(ingest.body);
+      expect(jobId).toBeTruthy();
+
+      const readResponses = await Promise.all([
+        requestWithin(app, "get", "/api/health", 500),
+        requestWithin(app, "get", "/api/projects", 500),
+        requestWithin(app, "get", "/api/health", 500),
+        requestWithin(app, "get", "/api/projects", 500)
+      ]);
+      expect(readResponses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+      expect(readResponses[0].body.ok).toBe(true);
+      expect(Array.isArray(readResponses[1].body.projects)).toBe(true);
+
+      const job = await waitForJob(app, jobId);
+      expect(job.status).toBe("completed");
+      expect(job.totalFiles).toBeGreaterThanOrEqual(300);
+    } finally {
+      rmSync(largeCodexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the existing running ingest job instead of starting a second full scan", async () => {
+    const largeCodexHome = createRolloutFixtureCodexHome(320);
+    process.env.SUPERVIEW_TEST_INGEST_FILE_DELAY_MS = "1";
+    try {
+      const app = createServer();
+
+      const first = await request(app).post("/api/ingest").send({ codexHome: largeCodexHome });
+      expect(first.status).toBe(202);
+      const firstJobId = runningJobIdFromResponse(first.body);
+      expect(firstJobId).toBeTruthy();
+
+      const second = await request(app).post("/api/ingest").send({ codexHome: largeCodexHome });
+      expect(second.status).toBe(202);
+      const secondJobId = runningJobIdFromResponse(second.body);
+
+      expect(second.body).toEqual(
+        expect.objectContaining({
+          alreadyRunning: true
+        })
+      );
+      expect(secondJobId).toBe(firstJobId);
+
+      const job = await waitForJob(app, firstJobId);
+      expect(job.status).toBe("completed");
+      expect(job.totalFiles).toBeGreaterThanOrEqual(300);
+    } finally {
+      rmSync(largeCodexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("marks a crashed ingest worker failed and keeps APIs responsive", async () => {
+    const largeCodexHome = createRolloutFixtureCodexHome(320);
+    process.env.SUPERVIEW_TEST_INGEST_WORKER_FAIL = "1";
+    try {
+      const app = createServer();
+
+      const ingest = await request(app).post("/api/ingest").send({ codexHome: largeCodexHome });
+      expect(ingest.status).toBe(202);
+      const jobId = runningJobIdFromResponse(ingest.body);
+      expect(jobId).toBeTruthy();
+
+      const failedJob = await waitForJob(app, jobId);
+      expect(failedJob.status).toBe("failed");
+      expect(failedJob.finishedAt).toEqual(expect.any(String));
+      expect(failedJob.errors.length).toBeGreaterThan(0);
+
+      const [health, projects] = await Promise.all([
+        requestWithin(app, "get", "/api/health", 500),
+        requestWithin(app, "get", "/api/projects", 500)
+      ]);
+      expect(health.status).toBe(200);
+      expect(health.body.ok).toBe(true);
+      expect(projects.status).toBe(200);
+      expect(Array.isArray(projects.body.projects)).toBe(true);
+    } finally {
+      rmSync(largeCodexHome, { recursive: true, force: true });
+      delete process.env.SUPERVIEW_TEST_INGEST_WORKER_FAIL;
+    }
+  });
 });
 
 async function runIngest(app: express.Express, sourceCodexHome: string) {
@@ -244,7 +337,7 @@ function git(repoRoot: string, args: string[]) {
 }
 
 async function waitForJob(app: express.Express, jobId: string) {
-  for (let index = 0; index < 50; index += 1) {
+  for (let index = 0; index < 500; index += 1) {
     const response = await request(app).get(`/api/ingest/jobs/${jobId}`);
     expect(response.status).toBe(200);
     if (response.body.status === "completed" || response.body.status === "failed") {
@@ -253,4 +346,38 @@ async function waitForJob(app: express.Express, jobId: string) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Timed out waiting for ingest job ${jobId}`);
+}
+
+function createRolloutFixtureCodexHome(fileCount: number) {
+  const fixtureHome = mkdtempSync(path.join(tmpdir(), "superview-large-codex-home-"));
+  const sessionsDir = path.join(fixtureHome, "sessions", "2026", "05", "26");
+  mkdirSync(sessionsDir, { recursive: true });
+
+  for (let index = 0; index < fileCount; index += 1) {
+    const second = String(index % 60).padStart(2, "0");
+    const minute = String(Math.floor(index / 60) % 60).padStart(2, "0");
+    const timestamp = `2026-05-26T00:${minute}:${second}.000Z`;
+    const sessionId = `large-fixture-session-${String(index).padStart(4, "0")}`;
+    writeFileSync(
+      path.join(sessionsDir, `rollout-2026-05-26T00-${minute}-${second}-${String(index).padStart(4, "0")}.jsonl`),
+      [
+        JSON.stringify({ timestamp, type: "session_meta", payload: { id: sessionId, timestamp, cwd: "/tmp/superview-large-fixture", cli_version: "fixture", model_provider: "OpenAI", source: "fixture" } }),
+        JSON.stringify({ timestamp, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `processed fixture ${index}` }] } })
+      ].join("\n")
+    );
+  }
+
+  return fixtureHome;
+}
+
+function runningJobIdFromResponse(body: Record<string, unknown>) {
+  if (typeof body.jobId === "string") return body.jobId;
+  if (typeof body.runningJobId === "string") return body.runningJobId;
+  const job = body.job;
+  if (job && typeof job === "object" && "id" in job && typeof job.id === "string") return job.id;
+  return "";
+}
+
+async function requestWithin(app: express.Express, method: "get", url: string, timeoutMs: number) {
+  return request(app)[method](url).timeout({ response: timeoutMs, deadline: timeoutMs + 250 });
 }
