@@ -1,4 +1,4 @@
-import type { AgentSourceConfig, Artifact, EventEvidence, IngestJob, ProjectTimeline, RunReplay, SessionRecord, TaskJourneyDetail, TokenUsage } from "../../core/types";
+import type { AgentSourceConfig, Artifact, DailyTokenUsageResponse, EventEvidence, IngestJob, ProjectTimeline, RunReplay, SessionRecord, TaskJourneyDetail, TokenUsage } from "../../core/types";
 
 export interface ProjectWithSessions {
   id: string;
@@ -43,6 +43,12 @@ export async function fetchTimeline(projectId: string, query: { limit?: number; 
   const response = await fetch(`/api/projects/${projectId}/timeline${suffix}`);
   if (!response.ok) throw new Error("Failed to load timeline");
   return (await response.json()) as ProjectTimeline;
+}
+
+export async function fetchDailyTokenUsage(projectId: string): Promise<DailyTokenUsageResponse> {
+  const response = await fetch(`/api/projects/${projectId}/token-usage/daily`);
+  if (!response.ok) throw new Error("Failed to load daily token usage");
+  return (await response.json()) as DailyTokenUsageResponse;
 }
 
 export async function fetchEventEvidence(eventId: string): Promise<EventEvidence> {

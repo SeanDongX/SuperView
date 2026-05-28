@@ -30,6 +30,17 @@ test("filters projects by agent provider", async ({ page }) => {
       })
     });
   });
+  await page.route("**/api/projects/*/token-usage/daily", async (route) => {
+    const projectId = route.request().url().match(/\/api\/projects\/([^/]+)\/token-usage\/daily/)?.[1] ?? "project-codex";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        projectId,
+        points: [],
+        total: { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 }
+      })
+    });
+  });
 
   await page.goto("/");
 
@@ -146,12 +157,36 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
       body: JSON.stringify({
         id: "job-fixture",
         status: "completed",
+        phase: "completed",
         startedAt: "2026-05-25T02:00:00.000Z",
         finishedAt: "2026-05-25T02:00:01.000Z",
         totalFiles: 1,
         processedFiles: 1,
         totalEvents: 340,
+        skippedFiles: 4,
+        changedFiles: 1,
+        currentFile: "rollout.jsonl",
         errors: []
+      })
+    });
+  });
+
+  await page.route("**/api/projects/*/token-usage/daily", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        projectId: "project-fixture",
+        points: [
+          { date: "2026-05-25", input: 2200, output: 640, reasoning: 422, cachedInput: 520, total: 3262 },
+          { date: "2026-05-26", input: 2112, output: 620, reasoning: 420, cachedInput: 390, total: 3152 }
+        ],
+        total: {
+          input: 4312,
+          output: 1260,
+          reasoning: 842,
+          cachedInput: 910,
+          total: 6414
+        }
       })
     });
   });
@@ -503,7 +538,10 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
   await page.getByRole("textbox", { name: "Agent log root path", exact: true }).fill("tests/fixtures/fake-codex-home");
   await page.getByRole("button", { name: "Scan Agent Logs" }).first().click();
 
-  await expect(page.getByText(/Ingest completed/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("status", { name: /Ingest completed, completed, 1 of 1 files processed, 100 percent/ })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Castle clear")).toBeVisible();
+  await expect(page.getByText("Coins 1")).toBeVisible();
+  await expect(page.getByText("Cleared blocks 4")).toBeVisible();
   await expect(page.getByText("CLI Conversation", { exact: true })).toBeVisible();
   await expect(page.getByText("User Inputs", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Run Ledger", { exact: true })).toHaveCount(0);
@@ -513,6 +551,15 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
   await expect(page.locator(".status-cluster").getByText("6,414", { exact: true })).toBeVisible();
   await expect(page.locator(".status-cluster").getByText("KV hit", { exact: true })).toBeVisible();
   await expect(page.locator(".status-cluster").getByText("21.1%", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Token usage by day" })).toBeVisible();
+  await expect(page.getByText("2 visible days")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Daily token usage by date" })).toHaveCount(0);
+  await page.getByRole("button", { name: /Show daily token usage chart/ }).click();
+  await expect(page.getByRole("img", { name: "Daily token usage by date" })).toBeVisible();
+  await expect(page.getByLabel("Visible token usage breakdown").getByText("Input", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Visible token usage breakdown").getByText("Cached input", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Hide daily token usage chart/ }).click();
+  await expect(page.getByRole("img", { name: "Daily token usage by date" })).toHaveCount(0);
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue("project-fixture");
   await expect(page.getByLabel("Project", { exact: true })).toContainText("6.4K tokens / KV 21.1%");
   await expect(page.getByText("User", { exact: true }).first()).toBeVisible();
@@ -577,4 +624,74 @@ test("scans fixture logs, renders an IM-style task thread, hides background deta
 
   await page.getByLabel("Toggle theme").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("blocks conflicting controls while ingest is running", async ({ page }) => {
+  let ingestJobRequests = 0;
+
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        projects: [projectFixture("project-codex", "CodexProject", "codex")]
+      })
+    });
+  });
+  await page.route("**/api/projects/*/timeline?**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        project: { id: "project-codex", name: "CodexProject", cwd: "/tmp/CodexProject", repoRoot: "/tmp/CodexProject", createdAt: "2026-05-25T02:00:00.000Z", updatedAt: "2026-05-25T02:00:00.000Z" },
+        episodes: [],
+        events: [],
+        causalEdges: [],
+        taskJourneys: [],
+        tokenUsage: { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 },
+        totalEvents: 0,
+        limit: 300,
+        offset: 0
+      })
+    });
+  });
+  await page.route("**/api/projects/*/token-usage/daily", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ projectId: "project-codex", points: [], total: { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 } })
+    });
+  });
+  await page.route("**/api/ingest", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ jobId: "job-running" }) });
+  });
+  await page.route("**/api/ingest/jobs/job-running", async (route) => {
+    ingestJobRequests += 1;
+    const running = ingestJobRequests === 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "job-running",
+        status: running ? "running" : "completed",
+        phase: running ? "parsing" : "completed",
+        startedAt: "2026-05-25T02:00:00.000Z",
+        finishedAt: running ? null : "2026-05-25T02:00:04.000Z",
+        totalFiles: 20,
+        processedFiles: running ? 7 : 20,
+        totalEvents: running ? 80 : 120,
+        skippedFiles: 5,
+        changedFiles: 6,
+        currentFile: running ? "/tmp/CodexProject/session.jsonl" : null,
+        errors: []
+      })
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Scan Agent Logs" }).first().click();
+
+  await expect(page.getByRole("status", { name: "Blocking operation" })).toContainText("Scanning agent logs");
+  await expect(page.getByRole("button", { name: "Scan Agent Logs" }).first()).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Agent log root path", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Toggle theme")).toBeEnabled();
+  await expect(page.getByRole("status", { name: /Ingest running, parsing, 7 of 20 files processed, 35 percent/ })).toBeVisible();
+  await expect(page.getByRole("status", { name: "Blocking operation" })).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Scan Agent Logs" }).first()).toBeEnabled();
 });

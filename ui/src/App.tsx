@@ -1,7 +1,9 @@
 import { AlertTriangle, FileText, Moon, RotateCw, Search, Sun } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentProvider, Artifact, EventEvidence, IngestJob, ProjectTimeline, SkillUsage, TaskJourney, TaskJourneyDetail, TimelineEvent, TokenUsage } from "../../core/types";
-import { fetchEventEvidence, fetchIngestJob, fetchProjects, fetchTaskJourneyDetail, fetchTimeline, ProjectWithSessions, startIngest } from "./api";
+import type { AgentProvider, Artifact, DailyTokenUsageResponse, EventEvidence, IngestJob, ProjectTimeline, SkillUsage, TaskJourney, TaskJourneyDetail, TimelineEvent, TokenUsage } from "../../core/types";
+import { fetchDailyTokenUsage, fetchEventEvidence, fetchIngestJob, fetchProjects, fetchTaskJourneyDetail, fetchTimeline, ProjectWithSessions, startIngest } from "./api";
+import { DailyTokenUsagePanel } from "./DailyTokenUsagePanel";
+import { IngestLevelProgress } from "./IngestLevelProgress";
 
 type Theme = "light" | "dark";
 type ProjectProviderFilter = AgentProvider | "all";
@@ -14,6 +16,8 @@ export function App() {
   const [timeline, setTimeline] = useState<ProjectTimeline | null>(null);
   const [timelineOffset, setTimelineOffset] = useState(0);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [dailyTokenUsage, setDailyTokenUsage] = useState<DailyTokenUsageResponse | null>(null);
+  const [dailyTokenUsageLoading, setDailyTokenUsageLoading] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<TimelineEvent | null>(null);
   const [journeyDetails, setJourneyDetails] = useState<Record<string, TaskJourneyDetail>>({});
   const [journeyLoadingIds, setJourneyLoadingIds] = useState<Record<string, boolean>>({});
@@ -40,6 +44,14 @@ export function App() {
   useEffect(() => {
     if (!selectedProjectId) return;
     void loadTimeline(selectedProjectId, 0);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setDailyTokenUsage(null);
+      return;
+    }
+    void loadDailyTokenUsage(selectedProjectId);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -92,10 +104,11 @@ export function App() {
       setJob(next);
       if (next.status === "completed") {
         await loadProjects();
+        if (selectedProjectId) await loadDailyTokenUsage(selectedProjectId);
       }
     }, 700);
     return () => window.clearInterval(timer);
-  }, [job]);
+  }, [job, selectedProjectId]);
 
   async function loadProjects() {
     setLoading(true);
@@ -127,6 +140,20 @@ export function App() {
     }
   }
 
+  async function loadDailyTokenUsage(projectId: string) {
+    setDailyTokenUsageLoading(true);
+    try {
+      const next = await fetchDailyTokenUsage(projectId);
+      setDailyTokenUsage(next);
+      setError(null);
+    } catch (loadError) {
+      setDailyTokenUsage(null);
+      setError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setDailyTokenUsageLoading(false);
+    }
+  }
+
   async function loadNextTimelinePage() {
     if (!selectedProjectId || !timeline) return;
     const nextOffset = timelineOffset + (timeline.limit ?? TIMELINE_LIMIT);
@@ -140,10 +167,15 @@ export function App() {
   }
 
   async function handleScan() {
+    if (isIngestBusy(job)) return;
     setError(null);
-    const root = agentLogRoot.trim();
-    const jobId = await startIngest(root ? { sources: [{ provider: agentProvider, root: root, path: root }] } : { sources: [{ provider: agentProvider }] });
-    setJob(await fetchIngestJob(jobId));
+    try {
+      const root = agentLogRoot.trim();
+      const jobId = await startIngest(root ? { sources: [{ provider: agentProvider, root: root, path: root }] } : { sources: [{ provider: agentProvider }] });
+      setJob(await fetchIngestJob(jobId));
+    } catch (scanError) {
+      setError(scanError instanceof Error ? scanError.message : String(scanError));
+    }
   }
 
   async function loadJourneyDetail(journeyId: string, projectId = selectedProjectId ?? undefined) {
@@ -184,6 +216,8 @@ export function App() {
   const hasPreviousPage = timelineOffset > 0;
   const hasNextPage = totalEvents > timelineOffset + currentLimit;
   const projectTokenUsage = selectedProject?.tokenUsage ?? timeline?.tokenUsage ?? ZERO_TOKEN_USAGE;
+  const ingestBusy = isIngestBusy(job);
+  const blockingMessage = getBlockingMessage({ loading, timelineLoading, ingestBusy, dailyTokenUsageLoading });
 
   return (
     <div className="app-shell">
@@ -200,17 +234,18 @@ export function App() {
               value={agentLogRoot}
               onChange={(event) => setAgentLogRoot(event.target.value)}
               placeholder="Blank scans default Codex logs"
+              disabled={ingestBusy}
             />
           </label>
           <label className="agent-provider-control">
             <span>Source</span>
-            <select aria-label="Agent log source" value={agentProvider} onChange={(event) => setAgentProvider(event.target.value as AgentProvider)}>
+            <select aria-label="Agent log source" value={agentProvider} onChange={(event) => setAgentProvider(event.target.value as AgentProvider)} disabled={ingestBusy}>
               <option value="codex">Codex</option>
               <option value="claude-code">Claude Code</option>
               <option value="opencode">OpenCode</option>
             </select>
           </label>
-          <button className="shell-button" onClick={handleScan} disabled={job?.status === "running"}>
+          <button className="shell-button" onClick={handleScan} disabled={ingestBusy}>
             <RotateCw size={16} />
             Scan Agent Logs
           </button>
@@ -231,7 +266,7 @@ export function App() {
             <div className="project-controls-panel">
               <label className="project-control">
                 <span className="field-label">Provider</span>
-                <select aria-label="Project provider" value={projectProviderFilter} onChange={(event) => setProjectProviderFilter(event.target.value as ProjectProviderFilter)}>
+                <select aria-label="Project provider" value={projectProviderFilter} onChange={(event) => setProjectProviderFilter(event.target.value as ProjectProviderFilter)} disabled={timelineLoading || ingestBusy}>
                   <option value="all">All</option>
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
@@ -240,7 +275,7 @@ export function App() {
               </label>
               <label className="project-control" htmlFor="project-select">
                 <span className="field-label">Project</span>
-                <select id="project-select" aria-label="Project" value={selectedProjectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)} disabled={filteredProjects.length === 0}>
+                <select id="project-select" aria-label="Project" value={selectedProjectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)} disabled={filteredProjects.length === 0 || timelineLoading || ingestBusy}>
                   {filteredProjects.map((project) => (
                     <option key={project.id} value={project.id}>{project.name} - {providerSummary(project)} - {formatCompactNumber(project.tokenUsage.total)} tokens / KV {formatKvHitRate(project.tokenUsage)}</option>
                   ))}
@@ -258,14 +293,16 @@ export function App() {
         </section>
 
         {error ? <div className="alert"><AlertTriangle size={16} />{error}</div> : null}
-        {job ? <JobStrip job={job} /> : null}
+        {job ? <IngestLevelProgress job={job} /> : null}
+        {selectedProject ? <DailyTokenUsagePanel data={dailyTokenUsage} loading={dailyTokenUsageLoading} title="Token usage by day" maxVisiblePoints={30} /> : null}
+        {blockingMessage ? <BlockingLoader message={blockingMessage} /> : null}
 
         {loading ? (
-          <EmptyState title="Loading SuperView index" detail="Checking local SQLite state." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} />
+          <EmptyState title="Loading SuperView index" detail="Checking local SQLite state." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} disabled={ingestBusy} />
         ) : projects.length === 0 ? (
-          <EmptyState title="No agent runs indexed" detail="Scan local Codex, Claude Code, or OpenCode logs to build the first timeline." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} />
+          <EmptyState title="No agent runs indexed" detail="Scan local Codex, Claude Code, or OpenCode logs to build the first timeline." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} disabled={ingestBusy} />
         ) : filteredProjects.length === 0 ? (
-          <EmptyState title="No projects for this provider" detail="Switch the project filter to All, or scan logs for the selected provider." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} />
+          <EmptyState title="No projects for this provider" detail="Switch the project filter to All, or scan logs for the selected provider." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} disabled={ingestBusy} />
         ) : (
           <div className="dashboard-grid conversation-dashboard-grid">
             <section className="timeline-panel">
@@ -277,8 +314,8 @@ export function App() {
               <div className="timeline-controls">
                 <span>{timeline?.taskJourneys.length ?? 0} task journeys loaded from {timeline?.events.length ?? 0} events</span>
                 <div>
-                  <button className="secondary-button" onClick={loadPreviousTimelinePage} disabled={!hasPreviousPage || timelineLoading}>Prev page</button>
-                  <button className="secondary-button" onClick={loadNextTimelinePage} disabled={!hasNextPage || timelineLoading}>Next page</button>
+                  <button className="secondary-button" onClick={loadPreviousTimelinePage} disabled={!hasPreviousPage || timelineLoading || ingestBusy}>Prev page</button>
+                  <button className="secondary-button" onClick={loadNextTimelinePage} disabled={!hasNextPage || timelineLoading || ingestBusy}>Next page</button>
                 </div>
               </div>
               <ConversationThread
@@ -620,6 +657,20 @@ function RatioMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function BlockingLoader({ message }: { message: string }) {
+  return (
+    <div className="blocking-loader" role="status" aria-live="polite" aria-label="Blocking operation">
+      <div className="blocking-loader-card">
+        <span className="blocking-loader-icon" aria-hidden="true" />
+        <div>
+          <strong>{message}</strong>
+          <span>Keeping the workspace steady while SuperView updates.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({
   title,
   detail,
@@ -627,7 +678,8 @@ function EmptyState({
   onAgentProviderChange,
   agentLogRoot,
   onAgentLogRootChange,
-  onScan
+  onScan,
+  disabled = false
 }: {
   title: string;
   detail: string;
@@ -636,6 +688,7 @@ function EmptyState({
   agentLogRoot: string;
   onAgentLogRootChange: (value: string) => void;
   onScan: () => void;
+  disabled?: boolean;
 }) {
   return (
     <section className="empty-state">
@@ -644,7 +697,7 @@ function EmptyState({
       <p>{detail}</p>
       <label className="empty-agent-provider">
         <span>Agent log source</span>
-        <select aria-label="Empty agent log source" value={agentProvider} onChange={(event) => onAgentProviderChange(event.target.value as AgentProvider)}>
+        <select aria-label="Empty agent log source" value={agentProvider} onChange={(event) => onAgentProviderChange(event.target.value as AgentProvider)} disabled={disabled}>
           <option value="codex">Codex</option>
           <option value="claude-code">Claude Code</option>
           <option value="opencode">OpenCode</option>
@@ -652,22 +705,10 @@ function EmptyState({
       </label>
       <label className="empty-agent-root">
         <span>Agent log root path</span>
-        <input aria-label="Empty agent log root path" value={agentLogRoot} onChange={(event) => onAgentLogRootChange(event.target.value)} placeholder="Blank scans default Codex logs" />
+        <input aria-label="Empty agent log root path" value={agentLogRoot} onChange={(event) => onAgentLogRootChange(event.target.value)} placeholder="Blank scans default Codex logs" disabled={disabled} />
       </label>
-      <button className="primary-button" onClick={onScan}>Scan Agent Logs</button>
+      <button className="primary-button" onClick={onScan} disabled={disabled}>Scan Agent Logs</button>
     </section>
-  );
-}
-
-function JobStrip({ job }: { job: IngestJob }) {
-  const percent = job.totalFiles ? Math.round((job.processedFiles / job.totalFiles) * 100) : job.status === "completed" ? 100 : 0;
-  return (
-    <div className={`job-strip ${job.status}`}>
-      <span>Ingest {job.status}</span>
-      <div className="progress"><i style={{ width: `${percent}%` }} /></div>
-      <strong>{job.processedFiles}/{job.totalFiles} files</strong>
-      <span>{job.totalEvents} events</span>
-    </div>
   );
 }
 
@@ -758,6 +799,28 @@ function formatKvHitRate(usage: TokenUsage) {
 
 function formatCompactNumber(value: number) {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function isIngestBusy(job: IngestJob | null) {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function getBlockingMessage({
+  loading,
+  timelineLoading,
+  ingestBusy,
+  dailyTokenUsageLoading
+}: {
+  loading: boolean;
+  timelineLoading: boolean;
+  ingestBusy: boolean;
+  dailyTokenUsageLoading: boolean;
+}) {
+  if (ingestBusy) return "Scanning agent logs";
+  if (timelineLoading) return "Loading timeline page";
+  if (loading) return "Loading SuperView index";
+  if (dailyTokenUsageLoading) return "Loading daily token usage";
+  return null;
 }
 
 const ZERO_TOKEN_USAGE: TokenUsage = { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 };
