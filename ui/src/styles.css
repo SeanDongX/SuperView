@@ -1330,43 +1330,33 @@ pre {
 .ingest-level-block {
   position: relative;
   display: grid;
-  min-height: 24px;
+  min-height: 28px;
   place-items: center;
-  border: 2px solid color-mix(in srgb, var(--ink) 22%, var(--orange));
-  border-radius: 4px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--orange) 34%, #fff) 25%, transparent 25%) 0 0 / 10px 10px,
-    color-mix(in srgb, var(--orange) 70%, var(--surface-2));
-  color: #fff;
-  font: 900 12px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .ingest-level-block--cleared {
-  border-style: dashed;
-  background: color-mix(in srgb, var(--line-strong) 42%, transparent);
-  color: var(--muted);
   opacity: .72;
+}
+
+.ingest-level-block-sprite {
+  width: 42px;
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
 }
 
 .ingest-level-coin,
 .ingest-level-hazard {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  border-radius: 999px;
-}
-
-.ingest-level-coin {
-  border: 1px solid color-mix(in srgb, var(--warning) 72%, #fff);
-  background: var(--warning);
-  color: color-mix(in srgb, var(--ink) 72%, #000);
+  position: absolute;
+  top: -10px;
+  width: 24px;
+  height: auto;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, .18));
 }
 
 .ingest-level-hazard {
-  border: 1px solid color-mix(in srgb, var(--danger) 80%, #fff);
-  background: var(--danger);
-  color: #fff;
+  width: 26px;
 }
 
 .ingest-level-track {
@@ -1388,50 +1378,27 @@ pre {
 .ingest-level-avatar,
 .ingest-level-flag {
   position: absolute;
-  display: grid;
-  place-items: center;
-  font: 900 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .ingest-level-avatar {
-  bottom: 0;
-  width: 32px;
-  height: 32px;
+  bottom: -2px;
+  width: 44px;
+  height: auto;
   object-fit: contain;
   image-rendering: pixelated;
   filter: drop-shadow(0 3px 0 color-mix(in srgb, var(--ink) 30%, transparent));
 }
 
 .ingest-level-flag {
-  right: 2px;
-  bottom: 0;
-  width: 22px;
-  height: 38px;
-  border-left: 3px solid var(--ink);
-  color: #fff;
-}
-
-.ingest-level-flag::before {
-  position: absolute;
-  top: 2px;
-  left: 3px;
-  width: 20px;
-  height: 15px;
-  border-radius: 2px;
-  background: var(--success);
-  content: "";
-}
-
-.ingest-level-flag {
-  color: transparent;
+  right: -3px;
+  bottom: -2px;
+  width: 42px;
+  height: auto;
+  image-rendering: pixelated;
 }
 
 .ingest-level-progress--completed .ingest-level-avatar {
   filter: drop-shadow(0 3px 0 color-mix(in srgb, var(--success) 40%, transparent));
-}
-
-.ingest-level-progress--completed .ingest-level-flag::before {
-  background: var(--orange);
 }
 
 .ingest-level-progress--failed {

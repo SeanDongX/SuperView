@@ -1,6 +1,11 @@
 import type { IngestJob } from "../../core/types";
-import marioRunSprite from "./assets/mario-run.svg";
-import marioVictorySprite from "./assets/mario-victory.svg";
+import brickBlockSprite from "./assets/brick-block.png";
+import coinSprite from "./assets/coin.png";
+import goalFlagSprite from "./assets/goal-flag.png";
+import hazardSprite from "./assets/hazard.png";
+import marioRunSprite from "./assets/mario-run.png";
+import marioVictorySprite from "./assets/mario-victory.png";
+import questionBlockSprite from "./assets/question-block.png";
 
 const LEVEL_MARKERS = 9;
 
@@ -33,9 +38,11 @@ export function IngestLevelProgress({ job }: { job: IngestJob }) {
             const isCleared = skippedFiles > index;
             const hasCoin = changedFiles > index;
             const hasHazard = hazards > index;
+            const blockSprite = isCleared ? brickBlockSprite : questionBlockSprite;
             return (
               <span className={`ingest-level-block ${isCleared ? "ingest-level-block--cleared" : ""}`} key={index}>
-                {hasHazard ? <span className="ingest-level-hazard">!</span> : hasCoin ? <span className="ingest-level-coin">$</span> : null}
+                <img className="ingest-level-block-sprite" src={blockSprite} alt="" />
+                {hasHazard ? <img className="ingest-level-hazard" src={hazardSprite} alt="" /> : hasCoin ? <img className="ingest-level-coin" src={coinSprite} alt="" /> : null}
               </span>
             );
           })}
@@ -43,7 +50,7 @@ export function IngestLevelProgress({ job }: { job: IngestJob }) {
         <div className="ingest-level-track">
           <span className="ingest-level-ground" style={{ width: `${percent}%` }} />
           <img className="ingest-level-avatar" src={marioSprite} alt={job.status === "completed" ? "Pixel Mario victory" : "Pixel Mario running"} style={{ left: `clamp(0px, calc(${percent}% - 16px), calc(100% - 32px))` }} />
-          <span className="ingest-level-flag" aria-hidden="true">F</span>
+          <img className="ingest-level-flag" src={goalFlagSprite} alt="" aria-hidden="true" />
         </div>
       </div>
 

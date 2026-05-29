@@ -221,6 +221,7 @@ export function App() {
   const projectTokenUsage = selectedProject?.tokenUsage ?? timeline?.tokenUsage ?? ZERO_TOKEN_USAGE;
   const ingestBusy = isIngestBusy(job);
   const blockingMessage = getBlockingMessage({ loading, timelineLoading, ingestBusy, dailyTokenUsageLoading });
+  const blockingJob = getBlockingJob({ job, message: blockingMessage, ingestBusy, loading, timelineLoading, dailyTokenUsageLoading });
 
   return (
     <div className="app-shell">
@@ -328,7 +329,7 @@ export function App() {
 
         {error ? <div className="alert"><AlertTriangle size={16} />{error}</div> : null}
         {job && !ingestBusy ? <IngestLevelProgress job={job} /> : null}
-        {blockingMessage ? <BlockingLoader message={blockingMessage} job={ingestBusy ? job : null} /> : null}
+        {blockingMessage ? <BlockingLoader message={blockingMessage} job={blockingJob} /> : null}
 
         {loading ? (
           <EmptyState title="Loading SuperView index" detail="Checking local SQLite state." agentProvider={agentProvider} onAgentProviderChange={setAgentProvider} agentLogRoot={agentLogRoot} onAgentLogRootChange={setAgentLogRoot} onScan={handleScan} disabled={ingestBusy} />
@@ -861,6 +862,49 @@ function getBlockingMessage({
   if (loading) return "Loading SuperView index";
   if (dailyTokenUsageLoading) return "Loading daily token usage";
   return null;
+}
+
+function getBlockingJob({
+  job,
+  message,
+  ingestBusy,
+  loading,
+  timelineLoading,
+  dailyTokenUsageLoading
+}: {
+  job: IngestJob | null;
+  message: string | null;
+  ingestBusy: boolean;
+  loading: boolean;
+  timelineLoading: boolean;
+  dailyTokenUsageLoading: boolean;
+}) {
+  if (!message) return null;
+  if (ingestBusy && job) return job;
+  if (loading) return createLoaderJob("loading-projects", "scanning", 3, 12, message);
+  if (timelineLoading) return createLoaderJob("loading-timeline", "normalizing", 7, 12, message);
+  if (dailyTokenUsageLoading) return createLoaderJob("loading-token-usage", "parsing", 5, 12, message);
+  return createLoaderJob("loading-superview", "scanning", 4, 12, message);
+}
+
+function createLoaderJob(id: string, phase: IngestJob["phase"], processedFiles: number, totalFiles: number, currentFile: string): IngestJob {
+  return {
+    id,
+    status: "running",
+    phase,
+    startedAt: new Date(0).toISOString(),
+    finishedAt: null,
+    totalFiles,
+    processedFiles,
+    totalEvents: processedFiles * 10,
+    errors: [],
+    skippedFiles: Math.max(0, processedFiles - 2),
+    candidateFiles: totalFiles,
+    changedFiles: processedFiles,
+    processedBytes: 0,
+    totalBytes: 0,
+    currentFile
+  };
 }
 
 const ZERO_TOKEN_USAGE: TokenUsage = { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 };

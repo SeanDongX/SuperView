@@ -68,6 +68,31 @@ test("filters projects by agent provider", async ({ page }) => {
   await expect(projectSelect).toContainText("OpenCodeProject");
 });
 
+test("shows the Mario loading game while the project index loads", async ({ page }) => {
+  let releaseProjects!: () => void;
+  const projectsReady = new Promise<void>((resolve) => {
+    releaseProjects = resolve;
+  });
+
+  await page.route("**/api/projects", async (route) => {
+    await projectsReady;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ projects: [] })
+    });
+  });
+
+  await page.goto("/");
+
+  const blockingLoader = page.getByRole("status", { name: "Blocking operation" });
+  await expect(blockingLoader).toContainText("Loading SuperView index");
+  await expect(blockingLoader.getByRole("status", { name: /Ingest running, scanning, 3 of 12 files processed, 25 percent/ })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Pixel Mario running" })).toBeVisible();
+
+  releaseProjects();
+  await expect(blockingLoader).toHaveCount(0);
+});
+
 function projectFixture(id: string, name: string, provider: "codex" | "claude-code" | "opencode") {
   return {
     id,
