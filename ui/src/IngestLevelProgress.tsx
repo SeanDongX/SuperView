@@ -50,9 +50,9 @@ export function IngestLevelProgress({ job }: { job: IngestJob }) {
         <div className="ingest-level-track">
           <span className="ingest-level-ground" style={{ width: `${percent}%` }} />
           {isCompleted ? (
-            <img className="ingest-level-avatar ingest-level-avatar--victory" src={marioVictorySprite} alt={avatarLabel} style={{ left: `clamp(0px, calc(${percent}% - 32px), calc(100% - 72px))` }} />
+            <img className="ingest-level-avatar ingest-level-avatar--victory" src={marioVictorySprite} alt={avatarLabel} style={{ left: `clamp(0px, calc(${percent}% - 27px), calc(100% - 54px))` }} />
           ) : (
-            <span className="ingest-level-avatar ingest-level-avatar--running" role="img" aria-label={avatarLabel} data-frame-count="6" style={{ left: `clamp(0px, calc(${percent}% - 26px), calc(100% - 64px))` }} />
+            <span className="ingest-level-avatar ingest-level-avatar--running" role="img" aria-label={avatarLabel} data-frame-count="6" style={{ left: `clamp(0px, calc(${percent}% - 24px), calc(100% - 48px))` }} />
           )}
           <img className="ingest-level-flag" src={goalFlagSprite} alt="" aria-hidden="true" />
         </div>

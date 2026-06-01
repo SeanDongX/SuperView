@@ -834,8 +834,9 @@ function formatDuration(durationMs: number) {
 }
 
 function formatKvHitRate(usage: TokenUsage) {
-  if (usage.input <= 0) return "0.0%";
-  return `${((usage.cachedInput / usage.input) * 100).toFixed(1)}%`;
+  const totalInput = usage.input + usage.cachedInput;
+  if (totalInput <= 0) return "0.0%";
+  return `${((usage.cachedInput / totalInput) * 100).toFixed(1)}%`;
 }
 
 function formatMetricValue(label: string, value: number) {

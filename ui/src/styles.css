@@ -1395,14 +1395,14 @@ pre {
 }
 
 .ingest-level-avatar--running {
-  width: 64px;
-  height: 87px;
-  background: url("./assets/mario-walk-cycle.png") 0 100% / 384px 87px no-repeat;
-  animation: ingest-level-run 620ms steps(6) infinite;
+  width: 48px;
+  height: 65px;
+  background: url("./assets/mario-walk-cycle.png") 0px 0px / 288px 65px no-repeat;
+  animation: ingest-level-run 620ms infinite;
 }
 
 .ingest-level-avatar--victory {
-  width: 72px;
+  width: 54px;
 }
 
 .ingest-level-flag {
@@ -1433,9 +1433,13 @@ pre {
 }
 
 @keyframes ingest-level-run {
-  to {
-    background-position-x: -384px;
-  }
+  0% { background-position: 0px 0px; animation-timing-function: step-end; }
+  16.6667% { background-position: -48px 0px; animation-timing-function: step-end; }
+  33.3333% { background-position: -96px 0px; animation-timing-function: step-end; }
+  50% { background-position: -144px 0px; animation-timing-function: step-end; }
+  66.6667% { background-position: -192px 0px; animation-timing-function: step-end; }
+  83.3333% { background-position: -240px 0px; animation-timing-function: step-end; }
+  100% { background-position: -240px 0px; }
 }
 
 @keyframes ingest-level-ground-scroll {
