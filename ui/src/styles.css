@@ -159,6 +159,12 @@ select:disabled {
   width: 38px;
 }
 
+.language-toggle-button {
+  min-width: 54px;
+  padding: 0 10px;
+  font-weight: 900;
+}
+
 .workspace {
   position: relative;
   padding: 30px 28px 42px;

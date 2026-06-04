@@ -1,4 +1,5 @@
 import type { IngestJob } from "../../core/types";
+import type { IngestCopy } from "./i18n";
 import brickBlockSprite from "./assets/brick-block.png";
 import coinSprite from "./assets/coin.png";
 import goalFlagSprite from "./assets/goal-flag.png";
@@ -8,14 +9,14 @@ import questionBlockSprite from "./assets/question-block.png";
 
 const LEVEL_MARKERS = 9;
 
-export function IngestLevelProgress({ job }: { job: IngestJob }) {
+export function IngestLevelProgress({ job, copy }: { job: IngestJob; copy?: IngestCopy }) {
   const percent = getProgressPercent(job);
   const displayPercent = Math.round(percent);
   const changedFiles = job.changedFiles ?? 0;
   const skippedFiles = job.skippedFiles ?? 0;
   const hazards = job.errors.length;
-  const stateLabel = job.status === "completed" ? "Castle clear" : job.status === "failed" ? "Level failed" : "Running level";
-  const ariaLabel = `Ingest ${job.status}, ${job.phase}, ${job.processedFiles} of ${job.totalFiles} files processed, ${displayPercent} percent`;
+  const stateLabel = job.status === "completed" ? copy?.completed ?? "Castle clear" : job.status === "failed" ? copy?.failed ?? "Level failed" : copy?.running ?? "Running level";
+  const ariaLabel = copy?.aria(job.status, job.phase, job.processedFiles, job.totalFiles, displayPercent) ?? `Ingest ${job.status}, ${job.phase}, ${job.processedFiles} of ${job.totalFiles} files processed, ${displayPercent} percent`;
   const isCompleted = job.status === "completed";
   const avatarLabel = isCompleted ? "Pixel Mario victory" : "Pixel Mario running";
 
@@ -23,11 +24,11 @@ export function IngestLevelProgress({ job }: { job: IngestJob }) {
     <section className={`ingest-level-progress ingest-level-progress--${job.status}`} role="status" aria-live="polite" aria-label={ariaLabel}>
       <div className="ingest-level-header">
         <div>
-          <span className="ingest-level-kicker">Ingest level</span>
+          <span className="ingest-level-kicker">{copy?.kicker ?? "Ingest level"}</span>
           <strong>{stateLabel}</strong>
         </div>
         <div className="ingest-level-score">
-          <strong>{job.processedFiles}/{job.totalFiles} files</strong>
+          <strong>{job.processedFiles}/{job.totalFiles} {copy?.files ?? "files"}</strong>
           <span>{displayPercent}%</span>
         </div>
       </div>
@@ -59,15 +60,15 @@ export function IngestLevelProgress({ job }: { job: IngestJob }) {
       </div>
 
       <div className="ingest-level-meta">
-        <span>Phase: {job.phase}</span>
-        <span>Current: {job.currentFile || "Waiting for next file"}</span>
+        <span>{copy?.phase ?? "Phase"}: {job.phase}</span>
+        <span>{copy?.current ?? "Current"}: {job.currentFile || copy?.waitingFile || "Waiting for next file"}</span>
       </div>
 
       <div className="ingest-level-counters">
-        <span>Coins {changedFiles}</span>
-        <span>Cleared blocks {skippedFiles}</span>
-        <span>Hazards {hazards}</span>
-        <span>Events {job.totalEvents}</span>
+        <span>{copy?.coins ?? "Coins"} {changedFiles}</span>
+        <span>{copy?.clearedBlocks ?? "Cleared blocks"} {skippedFiles}</span>
+        <span>{copy?.hazards ?? "Hazards"} {hazards}</span>
+        <span>{copy?.events ?? "Events"} {job.totalEvents}</span>
       </div>
 
       {hazards > 0 ? (

@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import type { DailyTokenUsagePoint, DailyTokenUsageResponse, TokenUsage } from "../../core/types";
+import type { TokenChartCopy } from "./i18n";
 import { formatMillionTokens } from "./tokenFormat";
 
 export interface DailyTokenUsagePanelProps {
@@ -13,6 +14,7 @@ export interface DailyTokenUsagePanelProps {
   onExpandedChange?: (expanded: boolean) => void;
   maxVisiblePoints?: number;
   className?: string;
+  copy?: TokenChartCopy;
 }
 
 interface TokenParts {
@@ -70,8 +72,11 @@ export function DailyTokenUsagePanel({
   expanded: controlledExpanded,
   onExpandedChange,
   maxVisiblePoints,
-  className
+  className,
+  copy
 }: DailyTokenUsagePanelProps) {
+  const text = copy;
+  const panelTitle = title ?? text?.defaultTitle ?? "Daily Token Usage";
   const [uncontrolledExpanded, setUncontrolledExpanded] = useState(initiallyExpanded);
   const expanded = controlledExpanded ?? uncontrolledExpanded;
   const headingId = useId();
@@ -82,7 +87,7 @@ export function DailyTokenUsagePanel({
   const chart = useMemo(() => buildChart(visiblePoints), [visiblePoints]);
   const hasPoints = visiblePoints.length > 0;
   const panelClassName = className ? `token-chart-panel ${className}` : "token-chart-panel";
-  const subtitleText = subtitle ?? (loading ? "Loading daily usage" : hasPoints ? `${visiblePoints.length} visible day${visiblePoints.length === 1 ? "" : "s"}` : "No visible days");
+  const subtitleText = subtitle ?? (loading ? text?.loading ?? "Loading daily usage" : hasPoints ? text?.visibleDays(visiblePoints.length) ?? `${visiblePoints.length} visible day${visiblePoints.length === 1 ? "" : "s"}` : text?.noVisibleDays ?? "No visible days");
 
   function setExpanded(next: boolean) {
     onExpandedChange?.(next);
@@ -93,20 +98,20 @@ export function DailyTokenUsagePanel({
     <section className={panelClassName} aria-labelledby={headingId}>
       <div className="token-chart-header">
         <div className="token-chart-title-block">
-          <p className="token-chart-eyebrow">Tokens</p>
+          <p className="token-chart-eyebrow">{text?.eyebrow ?? "Tokens"}</p>
           <h2 id={headingId} className="token-chart-title">
-            {title}
+            {panelTitle}
           </h2>
           <p className="token-chart-subtitle">{subtitleText}</p>
         </div>
 
-        {showHeaderToggle ? <dl className="token-chart-summary" aria-label="Daily token usage summary">
+        {showHeaderToggle ? <dl className="token-chart-summary" aria-label={text?.summaryAria ?? "Daily token usage summary"}>
           <div className="token-chart-summary-item">
-            <dt>Total tokens</dt>
+            <dt>{text?.totalTokens ?? "Total tokens"}</dt>
             <dd>{formatTokens(summary.total)}</dd>
           </div>
           <div className="token-chart-summary-item">
-            <dt>KV hit</dt>
+            <dt>{text?.kvHit ?? "KV hit"}</dt>
             <dd>{formatKvHit(summary.kvHit)}</dd>
           </div>
         </dl> : null}
@@ -118,7 +123,7 @@ export function DailyTokenUsagePanel({
           aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
         >
-          <span>{expanded ? "Hide daily token usage chart" : "Show daily token usage chart"}</span>
+          <span>{expanded ? text?.hideChart ?? "Hide daily token usage chart" : text?.showChart ?? "Show daily token usage chart"}</span>
           <span className="token-chart-toggle-icon" aria-hidden="true">
             {expanded ? "-" : "+"}
           </span>
@@ -129,14 +134,14 @@ export function DailyTokenUsagePanel({
         <div id={bodyId} className="token-chart-body">
           {hasPoints ? (
             <>
-              <div className="token-chart-kpis" aria-label="Visible token usage breakdown">
-                <Metric label="Input" value={summary.input} />
-                <Metric label="Cached input" value={summary.cachedInput} />
-                <Metric label="Output" value={summary.output} />
-                <Metric label="Reasoning" value={summary.reasoning} />
+              <div className="token-chart-kpis" aria-label={text?.breakdownAria ?? "Visible token usage breakdown"}>
+                <Metric label={text?.input ?? "Input"} value={summary.input} />
+                <Metric label={text?.cachedInput ?? "Cached input"} value={summary.cachedInput} />
+                <Metric label={text?.output ?? "Output"} value={summary.output} />
+                <Metric label={text?.reasoning ?? "Reasoning"} value={summary.reasoning} />
               </div>
 
-              <div className="token-chart-scroll" role="group" aria-label="Daily token usage chart">
+              <div className="token-chart-scroll" role="group" aria-label={text?.chartAria ?? "Daily token usage chart"}>
                 <svg
                   className="token-chart-svg"
                   role="img"
@@ -145,7 +150,7 @@ export function DailyTokenUsagePanel({
                   width={chart.width}
                   height={SVG_HEIGHT}
                 >
-                  <title id={chartTitleId}>Daily token usage by date</title>
+                  <title id={chartTitleId}>{text?.chartTitle ?? "Daily token usage by date"}</title>
                   {chart.gridLines.map((gridLine) => (
                     <g className="token-chart-grid-line" key={gridLine.value}>
                       <line x1={CHART_MARGIN.left} x2={chart.width - CHART_MARGIN.right} y1={gridLine.y} y2={gridLine.y} />
@@ -165,7 +170,7 @@ export function DailyTokenUsagePanel({
 
                   {chart.bars.map((bar) => (
                     <g className="token-chart-bar-group" key={bar.key}>
-                      <title>{`${bar.label}: ${formatTokens(bar.total)} total tokens`}</title>
+                      <title>{`${bar.label}: ${formatTokens(bar.total)} ${text?.totalSuffix ?? "total tokens"}`}</title>
                       {bar.segments.map((segment) =>
                         segment.height > 0 ? (
                           <rect
@@ -177,7 +182,7 @@ export function DailyTokenUsagePanel({
                             height={segment.height}
                             rx={4}
                           >
-                            <title>{`${bar.label} ${segment.label}: ${formatTokens(segment.value)} tokens`}</title>
+                            <title>{`${bar.label} ${segment.label}: ${formatTokens(segment.value)} ${text?.tokenSuffix ?? "tokens"}`}</title>
                           </rect>
                         ) : null
                       )}
@@ -190,23 +195,23 @@ export function DailyTokenUsagePanel({
                   {chart.trendPath ? <path className="token-chart-trend" d={chart.trendPath} /> : null}
                   {chart.bars.map((bar) => (
                     <circle className="token-chart-trend-point" key={`${bar.key}-trend`} cx={bar.centerX} cy={bar.trendY} r={3.5}>
-                      <title>{`${bar.label} trend: ${formatTokens(bar.total)} tokens`}</title>
+                      <title>{`${bar.label} ${text?.trendLabel ?? "trend"}: ${formatTokens(bar.total)} ${text?.tokenSuffix ?? "tokens"}`}</title>
                     </circle>
                   ))}
                 </svg>
               </div>
 
-              <ul className="token-chart-legend" aria-label="Token usage legend">
-                <LegendItem className="token-chart-swatch-cached" label="Cached input" />
-                <LegendItem className="token-chart-swatch-input" label="Input" />
-                <LegendItem className="token-chart-swatch-output" label="Output" />
-                <LegendItem className="token-chart-swatch-reasoning" label="Reasoning" />
-                <LegendItem className="token-chart-swatch-trend" label="Total trend" />
+              <ul className="token-chart-legend" aria-label={text?.legendAria ?? "Token usage legend"}>
+                <LegendItem className="token-chart-swatch-cached" label={text?.cachedInput ?? "Cached input"} />
+                <LegendItem className="token-chart-swatch-input" label={text?.input ?? "Input"} />
+                <LegendItem className="token-chart-swatch-output" label={text?.output ?? "Output"} />
+                <LegendItem className="token-chart-swatch-reasoning" label={text?.reasoning ?? "Reasoning"} />
+                <LegendItem className="token-chart-swatch-trend" label={text?.totalTrend ?? "Total trend"} />
               </ul>
             </>
           ) : (
             <div className="token-chart-empty" aria-live="polite">
-              {loading ? "Loading daily token usage..." : "No daily token usage yet."}
+              {loading ? text?.emptyLoading ?? "Loading daily token usage..." : text?.empty ?? "No daily token usage yet."}
             </div>
           )}
         </div>

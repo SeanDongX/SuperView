@@ -1,5 +1,7 @@
 # SuperView
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 SuperView is a local-first dashboard for understanding how coding agents work from prompt to result. It ingests agent logs, reconstructs task journeys, and turns raw CLI sessions into a conversation-first view with hidden agent work, evidence, token usage, and project-level telemetry.
 
 The product goal is simple: make a coding agent run feel inspectable, replayable, and surprisingly visual.
@@ -180,4 +182,3 @@ Desktop packaging still needs explicit work around file permissions, database lo
 - Improve desktop packaging and first-run log-source setup.
 - Expand OpenCode and Claude Code compatibility as their log/export formats evolve.
 - Add deeper comparisons across projects, days, and agent providers.
-
