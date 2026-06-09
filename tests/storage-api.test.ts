@@ -152,6 +152,31 @@ describe("SuperView API", () => {
     expect(Array.isArray(journeyDetail.body.causalEdges)).toBe(true);
   });
 
+  it("returns all timeline events when a full project timeline is requested", async () => {
+    const eventCount = 650;
+    const expectedTotalEvents = eventCount + 1;
+    const largeTimelineCodexHome = createSingleSessionTimelineCodexHome(eventCount);
+    try {
+      const app = createServer();
+      const job = await runIngest(app, largeTimelineCodexHome);
+      expect(job.status).toBe("completed");
+
+      const projects = await request(app).get("/api/projects");
+      expect(projects.status).toBe(200);
+      const project = projects.body.projects.find((candidate: { name: string }) => candidate.name === "superview-full-timeline");
+      expect(project).toBeTruthy();
+
+      const timeline = await request(app).get(`/api/projects/${project.id}/timeline`).query({ limit: 100000, offset: 0 });
+      expect(timeline.status).toBe(200);
+      expect(timeline.body.totalEvents).toBe(expectedTotalEvents);
+      expect(timeline.body.events).toHaveLength(expectedTotalEvents);
+      expect(timeline.body.limit).toBe(100000);
+      expect(timeline.body.offset).toBe(0);
+    } finally {
+      rmSync(largeTimelineCodexHome, { recursive: true, force: true });
+    }
+  });
+
   it("persists skill usage and returns it in timelines and task journey details", async () => {
     const skillCodexHome = mkdtempSync(path.join(tmpdir(), "superview-skill-codex-home-"));
     try {
@@ -480,6 +505,45 @@ function createRolloutFixtureCodexHome(fileCount: number) {
     );
   }
 
+  return fixtureHome;
+}
+
+function createSingleSessionTimelineCodexHome(eventCount: number) {
+  const fixtureHome = mkdtempSync(path.join(tmpdir(), "superview-full-timeline-codex-home-"));
+  const sessionsDir = path.join(fixtureHome, "sessions", "2026", "05", "27");
+  mkdirSync(sessionsDir, { recursive: true });
+  const sessionTimestamp = "2026-05-27T00:00:00.000Z";
+  const lines = [
+    JSON.stringify({
+      timestamp: sessionTimestamp,
+      type: "session_meta",
+      payload: {
+        id: "full-timeline-session",
+        timestamp: sessionTimestamp,
+        cwd: "/tmp/superview-full-timeline",
+        cli_version: "fixture",
+        model_provider: "OpenAI",
+        source: "fixture"
+      }
+    })
+  ];
+
+  for (let index = 0; index < eventCount; index += 1) {
+    const timestamp = new Date(Date.UTC(2026, 4, 27, 0, 0, index + 1)).toISOString();
+    lines.push(
+      JSON.stringify({
+        timestamp,
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `timeline event ${index}` }]
+        }
+      })
+    );
+  }
+
+  writeFileSync(path.join(sessionsDir, "rollout-full-timeline.jsonl"), lines.join("\n"));
   return fixtureHome;
 }
 

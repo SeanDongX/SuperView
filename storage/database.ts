@@ -766,9 +766,12 @@ function phaseForStatus(status: IngestJob["status"]): IngestJob["phase"] {
   return "queued";
 }
 
+const DEFAULT_TIMELINE_LIMIT = 200;
+const MAX_TIMELINE_LIMIT = 100000;
+
 function normalizeLimit(limit: number | undefined): number {
-  if (limit === undefined) return 200;
-  return Math.min(500, Math.max(1, Math.trunc(limit)));
+  if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_TIMELINE_LIMIT;
+  return Math.min(MAX_TIMELINE_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
 function emptyTokenUsage(): TokenUsage {
