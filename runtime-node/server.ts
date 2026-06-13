@@ -115,6 +115,11 @@ export function createServer() {
     res.json(replay);
   });
 
+  app.post("/api/reset", (_req, res) => {
+    db.reset();
+    res.json({ ok: true });
+  });
+
   return app;
 }
 

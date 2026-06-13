@@ -49,6 +49,28 @@ export class SuperViewDatabase {
     this.db.close();
   }
 
+  reset() {
+    this.db.exec(`
+      DROP TABLE IF EXISTS task_journey_skills;
+      DROP TABLE IF EXISTS causal_edges;
+      DROP TABLE IF EXISTS episodes;
+      DROP TABLE IF EXISTS task_journeys;
+      DROP TABLE IF EXISTS turn_skills;
+      DROP TABLE IF EXISTS turns;
+      DROP TABLE IF EXISTS events;
+      DROP TABLE IF EXISTS raw_event_refs;
+      DROP TABLE IF EXISTS artifacts;
+      DROP TABLE IF EXISTS git_commits;
+      DROP TABLE IF EXISTS history_prompts;
+      DROP TABLE IF EXISTS sessions;
+      DROP TABLE IF EXISTS ingested_files;
+      DROP TABLE IF EXISTS ingest_jobs;
+      DROP TABLE IF EXISTS projects;
+      DROP TABLE IF EXISTS schema_meta;
+    `);
+    this.migrate();
+  }
+
   migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_meta (

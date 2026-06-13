@@ -80,3 +80,7 @@ export async function fetchRun(sessionId: string): Promise<RunReplay & { artifac
   if (!response.ok) throw new Error("Failed to load run");
   return (await response.json()) as RunReplay & { artifacts: Artifact[] };
 }
+
+export async function resetDatabase(): Promise<void> {
+  await fetch("/api/reset", { method: "POST" });
+}
