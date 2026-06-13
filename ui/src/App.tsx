@@ -1,4 +1,4 @@
-import { AlertTriangle, ArchiveX, Ban, ChartColumn, ChevronDown, Clock, FileText, Languages, Leaf, Moon, RotateCw, Search, Sparkles, Sun } from "lucide-react";
+import { AlertTriangle, ArchiveX, Ban, ChartColumn, ChevronDown, Clock, FileText, Languages, Leaf, Moon, Pause, Play, RotateCw, Search, Sparkles, Sun } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
@@ -23,6 +23,7 @@ import {
   fetchTaskJourneyDetail,
   fetchTimeline,
   ProjectWithSessions,
+  resetDatabase,
   startIngest
 } from "./api";
 import { DailyTokenUsagePanel } from "./DailyTokenUsagePanel";
@@ -55,6 +56,7 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(loadInitialTheme);
   const [themePanelOpen, setThemePanelOpen] = useState(false);
   const themeDropdownRef = useRef<HTMLDivElement | null>(null);
+  const projectDropdownRef = useRef<HTMLDivElement | null>(null);
   const [language, setLanguage] = useState<Language>(() => normalizeLanguage(localStorage.getItem("superview-language")));
   const [projects, setProjects] = useState<ProjectWithSessions[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -72,8 +74,12 @@ export function App() {
   const contextReplayLoadingRef = useRef(new Set<string>());
   const [collapsedJourneyIds, setCollapsedJourneyIds] = useState<Record<string, boolean>>({});
   const [job, setJob] = useState<IngestJob | null>(null);
+  const jobRef = useRef(job);
+  jobRef.current = job;
+  const jobClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const [projectProviderFilter, setProjectProviderFilter] = useState<ProjectProviderFilter>("all");
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [agentLogRoot, setAgentLogRoot] = useState("");
   const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -103,6 +109,24 @@ export function App() {
       document.removeEventListener("keydown", handleKey);
     };
   }, [themePanelOpen]);
+
+  useEffect(() => {
+    if (!projectDropdownOpen) return;
+    function handlePointerDown(event: MouseEvent) {
+      if (!projectDropdownRef.current) return;
+      if (projectDropdownRef.current.contains(event.target as Node)) return;
+      setProjectDropdownOpen(false);
+    }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setProjectDropdownOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [projectDropdownOpen]);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -141,16 +165,56 @@ export function App() {
 
   useEffect(() => {
     if (!job || job.status === "completed" || job.status === "failed") return;
+    if (jobClearTimer.current) clearTimeout(jobClearTimer.current);
     const timer = window.setInterval(async () => {
       const next = await fetchIngestJob(job.id);
       setJob(next);
-      if (next.status === "completed") {
-        await loadProjects();
-        if (selectedProjectId) await loadDailyTokenUsage(selectedProjectId);
+      if (next.status === "completed" || next.status === "failed") {
+        try {
+          const fresh = await fetchProjects();
+          setProjects(fresh);
+          if (selectedProjectId) setDailyTokenUsage(await fetchDailyTokenUsage(selectedProjectId));
+        } catch {
+          // silent
+        }
+        jobClearTimer.current = setTimeout(() => setJob(null), 2500);
       }
     }, 700);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      if (jobClearTimer.current) clearTimeout(jobClearTimer.current);
+    };
   }, [job, selectedProjectId]);
+
+  // Poll the selected project: refresh DB via provider-scoped scan every 60s, refresh UI every 15s
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const uiTimer = window.setInterval(async () => {
+      try {
+        const [nextTimeline, nextTokens] = await Promise.all([
+          fetchTimeline(selectedProjectId, { limit: PROJECT_TIMELINE_LIMIT, offset: 0 }),
+          fetchDailyTokenUsage(selectedProjectId)
+        ]);
+        setTimeline(nextTimeline);
+        setDailyTokenUsage(nextTokens);
+      } catch {
+        // silent
+      }
+    }, 15000);
+    const dbTimer = window.setInterval(async () => {
+      if (isIngestBusy(jobRef.current)) return;
+      try {
+        const jobId = await startIngest({ sources: [{ provider: agentProvider }] });
+        setJob(await fetchIngestJob(jobId));
+      } catch {
+        // silent
+      }
+    }, 60000);
+    return () => {
+      window.clearInterval(uiTimer);
+      window.clearInterval(dbTimer);
+    };
+  }, [selectedProjectId, agentProvider]);
 
   async function loadProjects() {
     setLoading(true);
@@ -192,6 +256,30 @@ export function App() {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setDailyTokenUsageLoading(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!confirm(copy.timeline.resetDatabaseConfirm)) return;
+    setScanPanelOpen(false);
+    try {
+      await resetDatabase();
+      setJob(null);
+      setTimeline(null);
+      setSelectedEvent(null);
+      setProjects([]);
+      setSelectedProjectId(null);
+      setDailyTokenUsage(null);
+      setDailyTokenUsageLoading(false);
+      setTimelineLoading(false);
+      setTokenChartExpanded(false);
+      setCollapsedJourneyIds({});
+      setJourneyDetails({});
+      setContextReplays({});
+      setError(null);
+      await loadProjects();
+    } catch {
+      // silent
     }
   }
 
@@ -255,7 +343,7 @@ export function App() {
   const totalEvents = timeline?.totalEvents ?? timeline?.events.length ?? 0;
   const projectTokenUsage = selectedProject?.tokenUsage ?? timeline?.tokenUsage ?? ZERO_TOKEN_USAGE;
   const ingestBusy = isIngestBusy(job);
-  const blockingMessage = getBlockingMessage({ copy, loading, timelineLoading, ingestBusy, dailyTokenUsageLoading });
+  const blockingMessage = getBlockingMessage({ copy, loading, timelineLoading, dailyTokenUsageLoading });
   const blockingJob = getBlockingJob({ job, message: blockingMessage, ingestBusy, loading, timelineLoading, dailyTokenUsageLoading });
 
   return (
@@ -296,18 +384,64 @@ export function App() {
                   <RotateCw size={16} />
                   {copy.topbar.scan}
                 </button>
+                <button className="shell-button" onClick={handleReset} style={{ marginTop: 4, fontSize: 11, color: "rgba(255,120,120,.8)" }}>
+                  {copy.timeline.resetDatabase}
+                </button>
               </div>
             ) : null}
           </div>
-          <button
-            className="shell-button language-toggle-button"
-            aria-label={copy.language.aria}
-            title={copy.language.title}
-            onClick={() => setLanguage((current) => (current === "en" ? "zh-CN" : "en"))}
-          >
-            <Languages size={16} />
-            {copy.language.short}
-          </button>
+          <div className="project-dropdown" ref={projectDropdownRef}>
+            <button
+              className="shell-button project-dropdown-trigger"
+              onClick={() => setProjectDropdownOpen((open) => !open)}
+              aria-expanded={projectDropdownOpen}
+              disabled={timelineLoading || ingestBusy}
+            >
+              <FileText size={16} />
+              {selectedProject?.name ?? copy.projectControls.project}
+              <ChevronDown size={15} aria-hidden="true" />
+            </button>
+            {projectDropdownOpen ? (
+              <div className="project-dropdown-panel">
+                <div className="project-dropdown-chips" role="group" aria-label={copy.projectControls.provider}>
+                  {(["all", "codex", "claude-code", "opencode"] as const).map((provider) => (
+                    <button
+                      key={provider}
+                      type="button"
+                      className={`project-dropdown-chip${projectProviderFilter === provider ? " active" : ""}`}
+                      onClick={() => setProjectProviderFilter(provider)}
+                    >
+                      {provider === "all" ? copy.projectControls.all : provider === "codex" ? "Codex" : provider === "claude-code" ? "Claude Code" : "OpenCode"}
+                    </button>
+                  ))}
+                </div>
+                <div className="project-dropdown-list" role="listbox" aria-label={copy.projectControls.project}>
+                  {filteredProjects.length === 0 ? (
+                    <div className="project-dropdown-empty">{copy.empty.noProviderTitle}</div>
+                  ) : (
+                    filteredProjects.map((project) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        role="option"
+                        aria-selected={project.id === selectedProjectId}
+                        className={`project-dropdown-item${project.id === selectedProjectId ? " active" : ""}`}
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          setProjectDropdownOpen(false);
+                        }}
+                      >
+                        <span className="project-dropdown-item-name">{project.name}</span>
+                        <span className="project-dropdown-item-meta">
+                          {formatMillionTokens(project.tokenUsage.total)} / KV {formatKvHitRate(project.tokenUsage)}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
           <div className="theme-dropdown" ref={themeDropdownRef}>
             <button
               className="icon-button"
@@ -341,6 +475,15 @@ export function App() {
               </div>
             ) : null}
           </div>
+          <button
+            className="shell-button language-toggle-button"
+            aria-label={copy.language.aria}
+            title={copy.language.title}
+            onClick={() => setLanguage((current) => (current === "en" ? "zh-CN" : "en"))}
+          >
+            <Languages size={16} />
+            {copy.language.short}
+          </button>
         </div>
       </header>
 
@@ -351,73 +494,49 @@ export function App() {
             <h1>{selectedProject?.name ?? copy.title.emptyProject}</h1>
             <p className="lead">{copy.title.lead}</p>
           </div>
-          <div className="title-actions">
-            <div className="project-controls-panel">
-              <label className="project-control">
-                <span className="field-label">{copy.projectControls.provider}</span>
-                <select aria-label={copy.projectControls.providerAria} value={projectProviderFilter} onChange={(event) => setProjectProviderFilter(event.target.value as ProjectProviderFilter)} disabled={timelineLoading || ingestBusy}>
-                  <option value="all">{copy.projectControls.all}</option>
-                  <option value="codex">Codex</option>
-                  <option value="claude-code">Claude Code</option>
-                  <option value="opencode">OpenCode</option>
-                </select>
-              </label>
-              <label className="project-control" htmlFor="project-select">
-                <span className="field-label">{copy.projectControls.project}</span>
-                <select id="project-select" aria-label={copy.projectControls.projectAria} value={selectedProjectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)} disabled={filteredProjects.length === 0 || timelineLoading || ingestBusy}>
-                  {filteredProjects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name} - {providerSummary(project, copy)} - {formatMillionTokens(project.tokenUsage.total)} {copy.timeline.tokens} / KV {formatKvHitRate(project.tokenUsage)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="status-cluster">
-              <Metric metricKey="projects" label={copy.metrics.projects} value={filteredProjects.length} />
-              <Metric metricKey="events" label={copy.metrics.events} value={totalEvents} />
-              <Metric metricKey="tasks" label={copy.metrics.tasks} value={timeline?.taskJourneys.length ?? 0} />
-              <Metric
-                metricKey="tokens"
-                label={copy.metrics.tokens}
-                value={projectTokenUsage.total}
-                action={
-                  selectedProject ? (
-                    <button
-                      className="metric-icon-button"
-                      type="button"
-                      aria-label={tokenChartExpanded ? copy.metrics.hideDailyTokens : copy.metrics.showDailyTokens}
-                      aria-expanded={tokenChartExpanded}
-                      onClick={() => setTokenChartExpanded((current) => !current)}
-                    >
-                      <ChartColumn size={15} />
-                    </button>
-                  ) : null
-                }
-                overlay={
-                  selectedProject && tokenChartExpanded ? (
-                    <DailyTokenUsagePanel
-                      copy={copy.tokenChart}
-                      data={dailyTokenUsage}
-                      loading={dailyTokenUsageLoading}
-                      title={copy.metrics.tokens}
-                      subtitle={copy.metrics.dailyUsageByDay}
-                      maxVisiblePoints={30}
-                      className="token-chart-panel--metric-popover"
-                      showHeaderToggle={false}
-                      expanded={tokenChartExpanded}
-                      onExpandedChange={setTokenChartExpanded}
-                    />
-                  ) : null
-                }
-              />
-              <RatioMetric label={copy.metrics.kvHit} value={formatKvHitRate(projectTokenUsage)} />
-            </div>
+          <div className="status-cluster">
+            <Metric metricKey="projects" label={copy.metrics.projects} value={filteredProjects.length} />
+            <Metric metricKey="events" label={copy.metrics.events} value={totalEvents} />
+            <Metric metricKey="tasks" label={copy.metrics.tasks} value={timeline?.taskJourneys.length ?? 0} />
+            <Metric
+              metricKey="tokens"
+              label={copy.metrics.tokens}
+              value={projectTokenUsage.total}
+              action={
+                selectedProject ? (
+                  <button
+                    className="metric-icon-button"
+                    type="button"
+                    aria-label={tokenChartExpanded ? copy.metrics.hideDailyTokens : copy.metrics.showDailyTokens}
+                    aria-expanded={tokenChartExpanded}
+                    onClick={() => setTokenChartExpanded((current) => !current)}
+                  >
+                    <ChartColumn size={15} />
+                  </button>
+                ) : null
+              }
+              overlay={
+                selectedProject && tokenChartExpanded ? (
+                  <DailyTokenUsagePanel
+                    copy={copy.tokenChart}
+                    data={dailyTokenUsage}
+                    loading={dailyTokenUsageLoading}
+                    title={copy.metrics.tokens}
+                    subtitle={copy.metrics.dailyUsageByDay}
+                    maxVisiblePoints={30}
+                    className="token-chart-panel--metric-popover"
+                    showHeaderToggle={false}
+                    expanded={tokenChartExpanded}
+                    onExpandedChange={setTokenChartExpanded}
+                  />
+                ) : null
+              }
+            />
+            <RatioMetric label={copy.metrics.kvHit} value={formatKvHitRate(projectTokenUsage)} />
           </div>
         </section>
 
         {error ? <div className="alert"><AlertTriangle size={16} />{error}</div> : null}
-        {job && !ingestBusy ? <IngestLevelProgress job={job} copy={copy.ingest} /> : null}
         {blockingMessage ? <BlockingLoader copy={copy.loading} ingestCopy={copy.ingest} message={blockingMessage} job={blockingJob} /> : null}
 
         {loading ? (
@@ -465,10 +584,6 @@ export function App() {
         ) : (
           <div className="dashboard-grid conversation-dashboard-grid">
             <section className="timeline-panel">
-              <div className="panel-heading">
-                <FileText size={17} />
-                <span>{copy.timeline.heading}</span>
-              </div>
               <ConversationThread
                 copy={copy.timeline}
                 journeys={journeys}
@@ -746,11 +861,14 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
   const blockOriginSteps = useMemo(() => buildBlockOriginSteps(replay?.snapshots ?? []), [replay]);
   const selectedBlock = activeSnapshot?.blocks.find((block) => block.id === selectedBlockId) ?? activeSnapshot?.blocks[0] ?? null;
 
+  const [replayPlaying, setReplayPlaying] = useState(false);
+
   function activateSnapshot(index: number, shouldFocus = false) {
     if (!replay?.snapshots.length) return;
     const nextSnapshot = replay.snapshots[index];
     if (!nextSnapshot) return;
     setSelectedSnapshotId(nextSnapshot.id);
+    setSelectedBlockId(null);
     if (shouldFocus) {
       requestAnimationFrame(() => {
         const button = snapshotButtonRefs.current[nextSnapshot.id];
@@ -758,6 +876,27 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
         button?.scrollIntoView({ block: "nearest", inline: "nearest" });
       });
     }
+  }
+
+  useEffect(() => {
+    if (!replayPlaying || !replay) return;
+    if (activeSnapshotIndex >= replay.snapshots.length - 1) {
+      setReplayPlaying(false);
+      return;
+    }
+    const timer = setTimeout(() => activateSnapshot(activeSnapshotIndex + 1), 2800);
+    return () => clearTimeout(timer);
+  }, [replayPlaying, activeSnapshotIndex, replay]);
+
+  // Stop playback on manual snapshot or block interaction
+  function handleDotOrBlockSelect(id: string) {
+    setReplayPlaying(false);
+    handleSelectBlock(id);
+  }
+
+  function handleUserActivateSnapshot(index: number, focus = false) {
+    setReplayPlaying(false);
+    activateSnapshot(index, focus);
   }
 
   function nextSnapshotIndexForKey(key: string) {
@@ -775,7 +914,7 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
     if (nextIndex === null) return;
     event.preventDefault();
     event.stopPropagation();
-    activateSnapshot(nextIndex, true);
+    handleUserActivateSnapshot(nextIndex, true);
   }
 
   useEffect(() => {
@@ -811,7 +950,7 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
       if (nextIndex !== null) {
         if (nextIndex === activeSnapshotIndex) return;
         event.preventDefault();
-        activateSnapshot(nextIndex, true);
+        handleUserActivateSnapshot(nextIndex, true);
         return;
       }
 
@@ -858,6 +997,20 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
         <div className="context-replay-summary">
           <div>
             <span>{copy.contextReplayTab}</span>
+            {replay && replay.snapshots.length > 1 ? (
+              <button
+                type="button"
+                className="replay-play-btn"
+                aria-label={replayPlaying ? copy.contextReplayAutoStop : copy.contextReplayAutoReplay}
+                onClick={() => {
+                  if (replayPlaying) { setReplayPlaying(false); return; }
+                  if (activeSnapshotIndex >= replay.snapshots.length - 1) activateSnapshot(0);
+                  setReplayPlaying(true);
+                }}
+              >
+                {replayPlaying ? <Pause size={12} /> : <Play size={12} />}
+              </button>
+            ) : null}
             <strong>{replay.journey.title}</strong>
             <p>{copy.contextReplayObserved}</p>
           </div>
@@ -893,7 +1046,7 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
               aria-current={snapshot.id === activeSnapshot.id ? "step" : undefined}
               aria-label={`${copy.contextReplayStep} ${index + 1}: ${snapshot.title}`}
               tabIndex={snapshot.id === activeSnapshot.id ? 0 : -1}
-              onClick={() => activateSnapshot(index)}
+              onClick={() => handleUserActivateSnapshot(index)}
               onKeyDown={handleSnapshotKeyDown}
             >
               <b className="context-snapshot-index">{index + 1}</b>
@@ -927,10 +1080,10 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
               ))}
             </div>
           ) : null}
-          <ContextBlockGroup copy={copy} title={copy.contextReplayActiveContext} blocks={groups.active} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={setSelectedBlockId} />
-          <ContextBlockGroup copy={copy} title={copy.contextReplayAdded} blocks={groups.added} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={setSelectedBlockId} />
-          <ContextBlockGroup copy={copy} title={copy.contextReplayChanged} blocks={groups.changed} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={setSelectedBlockId} />
-          <ContextBlockGroup copy={copy} title={copy.contextReplayDropped} blocks={groups.dropped} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={setSelectedBlockId} />
+          <ContextBlockGroup copy={copy} title={copy.contextReplayActiveContext} blocks={groups.active} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={handleDotOrBlockSelect} />
+          <ContextBlockGroup copy={copy} title={copy.contextReplayAdded} blocks={groups.added} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={handleDotOrBlockSelect} />
+          <ContextBlockGroup copy={copy} title={copy.contextReplayChanged} blocks={groups.changed} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={handleDotOrBlockSelect} />
+          <ContextBlockGroup copy={copy} title={copy.contextReplayDropped} blocks={groups.dropped} blockOriginSteps={blockOriginSteps} selectedBlockId={selectedBlock?.id ?? null} onSelectBlock={handleDotOrBlockSelect} />
         </div>
         <MiniScene
           copy={copy}
@@ -938,7 +1091,7 @@ function ContextReplayPanel({ copy, replay, loading }: { copy: AppCopy["timeline
           warnings={activeSnapshot.warnings}
           blockOriginSteps={blockOriginSteps}
           selectedBlockId={selectedBlock?.id ?? null}
-          onSelectBlock={handleSelectBlock}
+          onSelectBlock={handleDotOrBlockSelect}
         />
       </div>
     </section>
@@ -1454,11 +1607,9 @@ function SkillChips({ copy, skills }: { copy: AppCopy["timeline"]; skills: Skill
 function Metric({ metricKey, label, value, action, overlay }: { metricKey: MetricKey; label: string; value: number; action?: ReactNode; overlay?: ReactNode }) {
   return (
     <div className="metric">
-      <span>
-        {label}
-        {action}
-      </span>
+      <span>{label}</span>
       <strong>{formatMetricValue(metricKey, value)}</strong>
+      {action ? <div className="metric-action">{action}</div> : null}
       {overlay}
     </div>
   );
@@ -1621,16 +1772,13 @@ function getBlockingMessage({
   copy,
   loading,
   timelineLoading,
-  ingestBusy,
   dailyTokenUsageLoading
 }: {
   copy: AppCopy;
   loading: boolean;
   timelineLoading: boolean;
-  ingestBusy: boolean;
   dailyTokenUsageLoading: boolean;
 }) {
-  if (ingestBusy) return copy.loading.scanningLogs;
   if (timelineLoading) return copy.loading.loadingTimeline;
   if (loading) return copy.loading.loadingIndex;
   if (dailyTokenUsageLoading) return copy.loading.loadingDailyTokens;

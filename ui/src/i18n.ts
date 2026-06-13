@@ -115,6 +115,8 @@ export type AppCopy = {
     contextReplayTokenUsage: string;
     contextReplayStep: string;
     contextReplayFromStep: (step: number) => string;
+    contextReplayAutoReplay: string;
+    contextReplayAutoStop: string;
     contextReplayInspector: string;
     contextReplaySelectedBlock: string;
     contextReplayEvent: string;
@@ -140,6 +142,8 @@ export type AppCopy = {
     collapse: string;
     skills: string;
     hotkeyHint: string;
+    resetDatabase: string;
+    resetDatabaseConfirm: string;
   };
   evidence: {
     heading: string;
@@ -190,9 +194,9 @@ export const COPY: Record<Language, AppCopy> = {
       scan: "Scan Agent Logs"
     },
     title: {
-      eyebrow: "Project Timeline",
+      eyebrow: "Project Black Box",
       emptyProject: "No project indexed yet",
-      lead: "Replay each user input as an agent conversation, with background work available on demand."
+      lead: ""
     },
     projectControls: {
       provider: "Provider",
@@ -276,6 +280,8 @@ export const COPY: Record<Language, AppCopy> = {
       contextReplayTokenUsage: "Tokens",
       contextReplayStep: "Step",
       contextReplayFromStep: (step) => `from step ${step}`,
+      contextReplayAutoReplay: "Auto replay",
+      contextReplayAutoStop: "Stop",
       contextReplayInspector: "Context evidence",
       contextReplaySelectedBlock: "Selected block",
       contextReplayEvent: "Event",
@@ -300,7 +306,9 @@ export const COPY: Record<Language, AppCopy> = {
       expand: "Expand",
       collapse: "Collapse",
       skills: "Skills",
-      hotkeyHint: "↑↓ switch journey · ←→ switch step · W S A D switch block"
+      hotkeyHint: "↑↓ switch journey · ←→ switch step · W S A D switch block",
+      resetDatabase: "Reset database",
+      resetDatabaseConfirm: "This will permanently delete all indexed data. Scan again to rebuild. Continue?"
     },
     evidence: {
       heading: "Evidence",
@@ -384,9 +392,9 @@ export const COPY: Record<Language, AppCopy> = {
       scan: "扫描 Agent 日志"
     },
     title: {
-      eyebrow: "项目时间线",
+      eyebrow: "Project Black Box",
       emptyProject: "还没有索引项目",
-      lead: "把每次用户输入还原成一轮 agent 对话，需要时再展开后台工作过程。"
+      lead: ""
     },
     projectControls: {
       provider: "来源",
@@ -470,6 +478,8 @@ export const COPY: Record<Language, AppCopy> = {
       contextReplayTokenUsage: "Token 用量",
       contextReplayStep: "Step",
       contextReplayFromStep: (step) => `来自步骤 ${step}`,
+      contextReplayAutoReplay: "自动回放",
+      contextReplayAutoStop: "停止",
       contextReplayInspector: "上下文证据",
       contextReplaySelectedBlock: "选中 block",
       contextReplayEvent: "事件",
@@ -494,7 +504,9 @@ export const COPY: Record<Language, AppCopy> = {
       expand: "展开",
       collapse: "收起",
       skills: "Skills",
-      hotkeyHint: "↑↓ 切换对话 · ←→ 切换步骤 · W S A D 切换上下文块"
+      hotkeyHint: "↑↓ 切换对话 · ←→ 切换步骤 · W S A D 切换上下文块",
+      resetDatabase: "重置数据库",
+      resetDatabaseConfirm: "此操作将永久删除所有已索引数据。重新扫描后可重建。继续？"
     },
     evidence: {
       heading: "证据",
