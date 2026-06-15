@@ -173,7 +173,7 @@
   <tr><td>差异化叙事</td><td>"Agent 黑匣子"——把 coding agent 的运行过程变成可 inspect、可 replay 的可视化界面</td></tr>
   <tr><td>技术栈</td><td>本地优先（local-first）、SQLite、Electron desktop、Vite + React + Express</td></tr>
   <tr><td>竞争对标</td><td>LangSmith、Langfuse、Braintrust、Helicone</td></tr>
-  <tr><td>核心亮点</td><td>对话式 thread + Context Replay mini-scene（FLIP 动画）+ 多 provider（Codex / Claude Code / OpenCode）</td></tr>
+    <td>核心亮点</td><td>对话式 thread + Context Replay mini-scene（FLIP 动画）+ 多 provider（Codex / Claude Code / OpenCode）+ Cost Estimation（可编辑费率）+ Event Tape（事件密度图）+ Share Card（一键导出）</td>
 </table>
 
 <h3>1.2 目标人群分层（按转化潜力排序）</h3>
@@ -289,9 +289,9 @@
 <table>
   <tr><th>PLG 动因</th><th>执行细节</th></tr>
   <tr><td>零摩擦 onboarding</td><td>README 第一条命令后直接看到数据，无需配置、无需 key、无需注册</td></tr>
-  <tr><td>内置 "分享" 功能</td><td>加一个导出当前 timeline / replay 为截图或 deck 的按钮</td></tr>
+  <tr><td>内置 "分享" 功能</td><td>Share Card 已实现：一键导出含 spark bars、hero stats、story、verdict 的可视化卡片</td></tr>
   <tr><td>激活率衡量</td><td>安装后 5 分钟内完成一次项目扫描 = 已激活</td></tr>
-  <tr><td>病毒系数</td><td>每个用户在 5 分钟内产生一个可分享的"wow 截图"</td></tr>
+  <tr><td>病毒系数</td><td>Share Card + Readout Dashboard + Cost Estimation 让用户产生可分享的 "wow 截图"</td></tr>
 </table>
 
 
@@ -344,6 +344,54 @@
     <td><span class="star">★★★</span></td>
     <td>保留</td>
   </tr>
+  <tr>
+    <td><strong>Share Card（一键导出）</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★★★</span></td>
+    <td>增长飞轮燃料，含 spark bars + hero stats</td>
+  </tr>
+  <tr>
+    <td><strong>Cost Estimation（成本估算引擎）</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★★</span></td>
+    <td>Model Spend Table + 可编辑费率 + 按 model 聚合</td>
+  </tr>
+  <tr>
+    <td><strong>Readout Dashboard（5 格指标卡）</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★★</span></td>
+    <td>Sessions / Est. Cost / Total Tokens / Tool Calls / Errors</td>
+  </tr>
+  <tr>
+    <td><strong>Tool Usage Bars（工具调用统计）</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★</span></td>
+    <td>按 tool 聚合调用次数 + 失败数 + 展开/折叠</td>
+  </tr>
+  <tr>
+    <td><strong>Event Tape（事件密度图）</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★★</span></td>
+    <td>时间轴色条 + 语义分类 + 丰富 tooltip + 时间标注</td>
+  </tr>
+  <tr>
+    <td><strong>Search / Filter / Sort</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★</span></td>
+    <td>5 种排序 + 文本搜索过滤</td>
+  </tr>
+  <tr>
+    <td><strong>Drag-and-drop JSONL Import</strong></td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★★</span></td>
+    <td>拖拽 JSONL 文件直接导入 + dropzone overlay</td>
+  </tr>
+  <tr>
+    <td>Tooltip（follow-mouse + portal）</td>
+    <td><span class="tag tag-green">新增</span></td>
+    <td><span class="star">★★</span></td>
+    <td>Event Tape / Share Card hover 交互增强</td>
+  </tr>
 </table>
 </div>
 
@@ -351,9 +399,9 @@
 <table>
   <tr><th>功能</th><th>理由</th><th>优先级</th></tr>
   <tr>
-    <td><strong>一键导出 share card</strong></td>
-    <td>增长飞轮的燃料。加 "Share" 按钮 → 生成包含 project name + agent provider + 关键指标 + mini-scene dot 图的卡片</td>
-    <td><span class="tag tag-red">P0</span></td>
+    <td><strong>一键导出 share card</strong> <span class="tag tag-green">✅ 已有</span></td>
+    <td>增长飞轮的燃料。Share 按钮 → 生成包含 project name + agent provider + 关键指标 + mini-scene dot 图的卡片。已实现，包括 spark bars、hero stats、story 等视觉元素</td>
+    <td><span class="tag tag-green">Done</span></td>
   </tr>
   <tr>
     <td><strong>CLI quickstart</strong><br><code>curl -fsSL superview.dev/install.sh | bash</code></td>
@@ -428,8 +476,8 @@ First. Local. Always.</pre>
 <h3>4.2 Launch 时间线</h3>
 <table>
   <tr><th>阶段</th><th>时间</th><th>行动</th></tr>
-  <tr><td>Pre-launch</td><td>2 周</td><td>完善 share card + CLI；README 重写；录 15s demo video</td></tr>
-  <tr><td>Launch day</td><td>2 周后</td><td>HN post + X/Twitter 同步 + Reddit r/programming</td></tr>
+  <tr><td>Pre-launch（当前）</td><td>2026-06-16 起 1-2 周</td><td>CLI quickstart；README 重写；录 15s demo video；UI polish</td></tr>
+  <tr><td>Launch day</td><td>预计 2026-06-30</td><td>HN post + X/Twitter 同步 + Reddit r/programming</td></tr>
   <tr><td>Week 1-4</td><td>上线后</td><td>追 HN 评论反馈；修 bug；观察 GitHub Trending</td></tr>
   <tr><td>Month 2</td><td>稳定期</td><td>v0.2 + 功能 roadmap post；Dev.to 深度文</td></tr>
 </table>
@@ -461,7 +509,7 @@ First. Local. Always.</pre>
 
 <footer>
   使用 superpowers skills: designing-growth-loops · gtm-product-led-growth · copywriting · analytics
-  <br>Generated for SuperView · 2026-06-14
+  <br>Generated for SuperView · 2026-06-16
 </footer>
 
 </div>
