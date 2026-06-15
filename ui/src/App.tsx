@@ -10,6 +10,7 @@ import type {
   DailyTokenUsageResponse,
   IngestJob,
   ProjectTimeline,
+  SessionRecord,
   SkillUsage,
   TaskJourney,
   TaskJourneyDetail,
@@ -30,6 +31,7 @@ import {
 import { DailyTokenUsagePanel } from "./DailyTokenUsagePanel";
 import { AppCopy, COPY, IngestCopy, Language, normalizeLanguage } from "./i18n";
 import { formatMillionTokens } from "./tokenFormat";
+import { aggregateCostByModel, DEFAULT_PRICING, estimateProjectCost, formatCost, ModelPricing } from "../../core/cost";
 
 type Theme = "light" | "dark" | "forest" | "plasma";
 type ProjectProviderFilter = AgentProvider | "all";
@@ -85,6 +87,9 @@ export function App() {
   const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dropzoneOpen, setDropzoneOpen] = useState(false);
+  const dropzoneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pricing, setPricing] = useState<ModelPricing[]>(() => DEFAULT_PRICING.map(p => ({...p, test: p.test})));
 
   const copy = COPY[language];
 
@@ -217,6 +222,58 @@ export function App() {
     };
   }, [selectedProjectId, agentProvider]);
 
+  // Drag-and-drop JSONL import
+  useEffect(() => {
+    function onDragOver(event: DragEvent) {
+      if (event.dataTransfer?.types.includes("Files")) {
+        event.preventDefault();
+        if (dropzoneTimer.current) clearTimeout(dropzoneTimer.current);
+        setDropzoneOpen(true);
+      }
+    }
+    function onDragLeave(event: DragEvent) {
+      if (!event.currentTarget || (event.relatedTarget && (event.currentTarget as Node).contains(event.relatedTarget as Node))) return;
+      dropzoneTimer.current = setTimeout(() => setDropzoneOpen(false), 150);
+    }
+    function onDrop(event: DragEvent) {
+      event.preventDefault();
+      setDropzoneOpen(false);
+      if (dropzoneTimer.current) clearTimeout(dropzoneTimer.current);
+      const files = event.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      void handleDropFiles(files);
+    }
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+      if (dropzoneTimer.current) clearTimeout(dropzoneTimer.current);
+    };
+  }, []);
+
+  async function handleDropFiles(files: FileList) {
+    for (const file of Array.from(files)) {
+      if (!file.name.endsWith(".jsonl")) continue;
+      try {
+        const content = await file.text();
+        const lines = content.trim().split("\n").filter(Boolean);
+        const jobId = await startIngest({ sources: [{ provider: "codex", path: file.name }] });
+        setJob(await fetchIngestJob(jobId));
+        // queue a re-scan after the upload completes
+        setTimeout(async () => {
+          try {
+            const fresh = await fetchProjects();
+            setProjects(fresh);
+            if (selectedProjectId) setDailyTokenUsage(await fetchDailyTokenUsage(selectedProjectId));
+          } catch { /* silent */ }
+        }, 3000);
+      } catch { /* silent */ }
+    }
+  }
+
   async function loadProjects() {
     setLoading(true);
     try {
@@ -341,6 +398,13 @@ export function App() {
   const selectedProject = filteredProjects.find((project) => project.id === selectedProjectId) ?? null;
   const journeys = timeline?.taskJourneys ?? [];
   const timelineEventsById = useMemo(() => new Map((timeline?.events ?? []).map((event) => [event.id, event])), [timeline]);
+  const sessionMap = useMemo(() => {
+    const map = new Map<string, SessionRecord>();
+    for (const s of selectedProject?.sessions ?? []) {
+      map.set(s.id, s);
+    }
+    return map;
+  }, [selectedProject?.sessions]);
   const totalEvents = timeline?.totalEvents ?? timeline?.events.length ?? 0;
   const projectTokenUsage = selectedProject?.tokenUsage ?? timeline?.tokenUsage ?? ZERO_TOKEN_USAGE;
   const ingestBusy = isIngestBusy(job);
@@ -534,8 +598,10 @@ export function App() {
               }
             />
             <RatioMetric label={copy.metrics.kvHit} value={formatKvHitRate(projectTokenUsage)} />
+            <RatioMetric label={copy.metrics.cost} value={formatCost(estimateProjectCost(projectTokenUsage, undefined, pricing))} />
           </div>
         </section>
+        <PricingEditor pricing={pricing} onPricingChange={setPricing} copy={copy.timeline} />
 
         {error ? <div className="alert"><AlertTriangle size={16} />{error}</div> : null}
         {blockingMessage ? <BlockingLoader copy={copy.loading} ingestCopy={copy.ingest} message={blockingMessage} job={blockingJob} /> : null}
@@ -588,6 +654,7 @@ export function App() {
               <ConversationThread
                 copy={copy.timeline}
                 journeys={journeys}
+                pricing={pricing}
                 detailsByJourneyId={journeyDetails}
                 contextReplaysByJourneyId={contextReplays}
                 timelineEventsById={timelineEventsById}
@@ -602,11 +669,19 @@ export function App() {
                 onSelectEvent={(event) => setSelectedEvent(event)}
                 tokenTimelineOpen={tokenTimelineOpen}
                 setTokenTimelineOpen={setTokenTimelineOpen}
+                sessionMap={sessionMap}
               />
             </section>
           </div>
         )}
       </main>
+      {dropzoneOpen ? (
+        <div className="dropzone-overlay" aria-hidden="true">
+          <div className="dropzone-message">
+            {copy.timeline.dropzoneActive}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -639,6 +714,7 @@ function buildBlockOriginSteps(snapshots: ContextSnapshot[]) {
 function ConversationThread({
   copy,
   journeys,
+  pricing,
   detailsByJourneyId,
   contextReplaysByJourneyId,
   timelineEventsById,
@@ -652,10 +728,12 @@ function ConversationThread({
   onLoadContextReplay,
   onSelectEvent,
   tokenTimelineOpen,
-  setTokenTimelineOpen
+  setTokenTimelineOpen,
+  sessionMap
 }: {
   copy: AppCopy["timeline"];
   journeys: TaskJourney[];
+  pricing: ModelPricing[];
   detailsByJourneyId: Record<string, TaskJourneyDetail>;
   contextReplaysByJourneyId: Record<string, ContextReplayResponse>;
   timelineEventsById: Map<string, TimelineEvent>;
@@ -670,8 +748,11 @@ function ConversationThread({
   onSelectEvent: (event: TimelineEvent) => void;
   tokenTimelineOpen: boolean;
   setTokenTimelineOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  sessionMap: Map<string, SessionRecord>;
 }) {
-  const orderedJourneys = useMemo(() => [...journeys].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)), [journeys]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("newest");
+  const orderedJourneys = useMemo(() => applySearchAndSort(journeys, searchQuery, sortKey, pricing), [journeys, searchQuery, sortKey, pricing]);
   const [selectedJourneyId, setSelectedJourneyId] = useState<string | null>(null);
   const masterListRef = useRef<HTMLDivElement>(null);
   const [detailTab, setDetailTab] = useState<ThreadDetailTab>("context");
@@ -764,6 +845,28 @@ function ConversationThread({
             <ChartColumn size={13} />
           </button>
         </div>
+        <div className="conversation-master-search">
+          <input
+            type="search"
+            className="master-search-input"
+            placeholder={copy.searchPlaceholder}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label={copy.searchPlaceholder}
+          />
+          <select
+            className="master-sort-select"
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as SortKey)}
+            aria-label={copy.sortLabel}
+          >
+            <option value="newest">{copy.sortNewest}</option>
+            <option value="cost">{copy.sortCost}</option>
+            <option value="duration">{copy.sortDuration}</option>
+            <option value="tools">{copy.sortTools}</option>
+            <option value="errors">{copy.sortErrors}</option>
+          </select>
+        </div>
         <div className="conversation-master-list" ref={masterListRef}>
           {orderedJourneys.map((journey) => (
             <ConversationMasterItem
@@ -773,6 +876,7 @@ function ConversationThread({
               fallbackPrompt={timelineEventsById.get(journey.promptEventId) ?? null}
               active={journey.id === selectedJourney?.id}
               loading={Boolean(loadingJourneyIds[journey.id])}
+              timelineEventsById={timelineEventsById}
               onSelect={() => setSelectedJourneyId(journey.id)}
             />
           ))}
@@ -780,10 +884,13 @@ function ConversationThread({
       </aside>
 
       <section className="conversation-detail-pane" aria-label={copy.detailsAria}>
+        <ReadoutDashboard journeys={orderedJourneys} copy={copy} timelineEventsById={timelineEventsById} />
         <div className="conversation-detail-heading">
           <span>{copy.detailsTitle}</span>
           <strong>{selectedJourney?.title ?? copy.emptySelection}</strong>
         </div>
+        <ToolUsageBars tools={aggregateToolUsage(selectedJourney, timelineEventsById)} copy={copy} />
+        <ModelSpendTable journeys={orderedJourneys} sessionMap={sessionMap} pricing={pricing} copy={copy} />
         <div className="thread-detail-tabs" role="tablist" aria-label={copy.detailTabsAria}>
           <button type="button" role="tab" aria-selected={detailTab === "context"} className={detailTab === "context" ? "active" : ""} onClick={() => setDetailTab("context")}>
             {copy.contextReplayTab}
@@ -846,6 +953,7 @@ function ConversationMasterItem({
   fallbackPrompt,
   active,
   loading,
+  timelineEventsById,
   onSelect
 }: {
   copy: AppCopy["timeline"];
@@ -853,6 +961,7 @@ function ConversationMasterItem({
   fallbackPrompt: TimelineEvent | null;
   active: boolean;
   loading: boolean;
+  timelineEventsById: Map<string, TimelineEvent>;
   onSelect: () => void;
 }) {
   const promptText = fallbackPrompt?.detail ?? journey.title;
@@ -866,6 +975,7 @@ function ConversationMasterItem({
     >
       <span>{formatDate(journey.startedAt, copy)}</span>
       <strong>{promptText}</strong>
+      {active ? <EventTape eventIds={journey.eventIds} timelineEventsById={timelineEventsById} /> : null}
       <em>
         {formatDuration(journey.durationMs)} · {formatMillionTokens(journey.tokenUsage.total)} {copy.tokens} · {copy.kvHit} {formatKvHitRate(journey.tokenUsage)}
       </em>
@@ -2356,10 +2466,20 @@ function Tooltip({ text, children }: { text: string; children: ReactNode }) {
     setOpen(true);
   }
 
+  function move(event: React.MouseEvent) {
+    const pad = 14;
+    let left = event.clientX + pad;
+    let top = event.clientY + pad;
+    if (left + 260 > window.innerWidth) left = event.clientX - 260 - pad;
+    if (top + 120 > window.innerHeight) top = event.clientY - 120 - pad;
+    setPosition({ top, left });
+  }
+
   return (
     <span
       ref={wrapperRef}
       onMouseEnter={show}
+      onMouseMove={move}
       onMouseLeave={() => setOpen(false)}
       onFocus={show}
       onBlur={() => setOpen(false)}
@@ -2612,6 +2732,405 @@ function createLoaderJob(id: string, phase: IngestJob["phase"], processedFiles: 
     totalBytes: 0,
     currentFile
   };
+}
+
+// ── Tool Usage Types & Helpers ──
+
+interface ToolUsageItem {
+  name: string;
+  count: number;
+  errors: number;
+}
+
+function aggregateToolUsage(journey: TaskJourney | null, timelineEventsById: Map<string, TimelineEvent>): ToolUsageItem[] {
+  if (!journey) return [];
+  const map = new Map<string, { count: number; errors: number }>();
+  for (const eventId of journey.eventIds) {
+    const event = timelineEventsById.get(eventId);
+    if (!event) continue;
+    const toolName = event.toolName || (event.kind === "tool_call" ? event.title : null);
+    if (!toolName) continue;
+    const entry = map.get(toolName) ?? { count: 0, errors: 0 };
+    entry.count++;
+    if (event.status === "failed") entry.errors++;
+    map.set(toolName, entry);
+  }
+  return [...map.entries()]
+    .map(([name, { count, errors }]) => ({ name, count, errors }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function aggregateJourneyErrors(journeys: TaskJourney[]): number {
+  return journeys.filter((j) => j.status === "failed").length;
+}
+
+function aggregateJourneyToolCalls(journeys: TaskJourney[], timelineEventsById: Map<string, TimelineEvent>): number {
+  let count = 0;
+  for (const j of journeys) {
+    for (const eventId of j.eventIds) {
+      const event = timelineEventsById.get(eventId);
+      if (event?.toolName) count++;
+    }
+  }
+  return count;
+}
+
+// ── ToolUsageBars ──
+
+function ToolUsageBars({ tools, copy }: { tools: ToolUsageItem[]; copy: AppCopy["timeline"] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (tools.length === 0) {
+    return <section className="tool-usage-bars"><p className="muted">{copy.toolUsageEmpty}</p></section>;
+  }
+  const maxCount = Math.max(...tools.map((t) => t.count));
+  const visible = expanded ? tools : tools.slice(0, 5);
+  return (
+    <section className="tool-usage-bars" aria-label={copy.toolUsageHeading}>
+      <div className="detail-section-heading">
+        <span>{copy.toolUsageHeading}</span>
+        <span style={{ color: "var(--muted)", fontSize: 10, fontWeight: 800 }}>{tools.length}</span>
+      </div>
+      <div className="tool-usage-list">
+        {visible.map((tool) => (
+          <div key={tool.name} className="tool-usage-row">
+            <span className="tool-usage-name">{tool.name}</span>
+            <span className="tool-usage-track">
+              <span className="tool-usage-fill" style={{ width: `${(tool.count / maxCount) * 100}%` }} />
+            </span>
+            <span className="tool-usage-count">{tool.count}</span>
+            {tool.errors > 0 ? <span className="tool-usage-errors">{tool.errors} {copy.toolUsageErrors}</span> : null}
+          </div>
+        ))}
+      </div>
+      {tools.length > 5 ? (
+        <button
+          type="button"
+          className="tool-usage-toggle"
+          onClick={() => setExpanded((e) => !e)}
+        >
+          {expanded ? `▲ ${tools.length - 5} less` : `▼ ${tools.length - 5} more`}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+// ── ModelSpendTable ──
+
+function ModelSpendTable({ journeys, sessionMap, pricing, copy }: {
+  journeys: TaskJourney[];
+  sessionMap: Map<string, SessionRecord>;
+  pricing: ModelPricing[];
+  copy: AppCopy["timeline"];
+}) {
+  const rows = useMemo(() => aggregateCostByModel(journeys, sessionMap, pricing), [journeys, sessionMap, pricing]);
+
+  if (rows.length === 0) {
+    return (
+      <section className="model-spend-table">
+        <div className="detail-section-heading">
+          <span>{copy.modelSpendHeading}</span>
+        </div>
+        <p className="muted">{copy.modelSpendEmpty}</p>
+      </section>
+    );
+  }
+
+  const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
+  const totalInput = rows.reduce((sum, r) => sum + r.input, 0);
+  const totalOutput = rows.reduce((sum, r) => sum + r.output, 0);
+  const totalCached = rows.reduce((sum, r) => sum + r.cachedInput, 0);
+  const totalMsgs = rows.reduce((sum, r) => sum + r.messages, 0);
+
+  return (
+    <section className="model-spend-table" aria-label={copy.modelSpendHeading}>
+      <div className="detail-section-heading">
+        <span>{copy.modelSpendHeading}</span>
+        <span style={{ color: "var(--muted)", fontSize: 10, fontWeight: 800 }}>{rows.length}</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>{copy.modelSpendModel}</th>
+            <th>{copy.modelSpendMsgs}</th>
+            <th>{copy.modelSpendInput}</th>
+            <th>{copy.modelSpendOutput}</th>
+            <th>{copy.modelSpendCached}</th>
+            <th>{copy.modelSpendCost}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.model}>
+              <td>{row.label}</td>
+              <td>{row.messages}</td>
+              <td>{formatMillionTokens(row.input)}</td>
+              <td>{formatMillionTokens(row.output)}</td>
+              <td>{formatMillionTokens(row.cachedInput)}</td>
+              <td className="cost">{formatCost(row.cost)}</td>
+            </tr>
+          ))}
+        </tbody>
+        {rows.length > 1 ? (
+          <tfoot>
+            <tr>
+              <td>{copy.modelSpendTotal}</td>
+              <td>{totalMsgs}</td>
+              <td>{formatMillionTokens(totalInput)}</td>
+              <td>{formatMillionTokens(totalOutput)}</td>
+              <td>{formatMillionTokens(totalCached)}</td>
+              <td className="cost">{formatCost(totalCost)}</td>
+            </tr>
+          </tfoot>
+        ) : null}
+      </table>
+    </section>
+  );
+}
+
+// ── EventTape ──
+
+function categorizeEvent(event: TimelineEvent): string {
+  if (event.kind === "user_prompt") return "user";
+  if (event.kind === "assistant_message") return "assistant";
+  if (event.kind === "tool_call") return "tool";
+  if (event.kind === "reasoning_marker") return "thinking";
+  if (event.kind === "error" || event.status === "failed") return "error";
+  return "meta";
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  user: "User message",
+  assistant: "Assistant reply",
+  tool: "Tool call",
+  thinking: "Thinking",
+  error: "Error",
+  compact: "Compaction",
+  meta: "Meta"
+};
+
+function formatTapeTime(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function formatTapeDate(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+}
+
+function EventTape({ eventIds, timelineEventsById }: { eventIds: string[]; timelineEventsById: Map<string, TimelineEvent> }) {
+  const events = eventIds
+    .map((id) => timelineEventsById.get(id))
+    .filter((e): e is TimelineEvent => e !== undefined);
+
+  if (events.length === 0) return null;
+
+  const timestamps = events.map((e) => Date.parse(e.timestamp));
+  const start = timestamps[0];
+  const end = timestamps[timestamps.length - 1];
+  const span = end - start;
+  const useEvenSpacing = !isFinite(span) || span <= 0 || timestamps.some((t) => isNaN(t));
+  const count = events.length;
+
+  return (
+    <div>
+      <div className="event-tape" aria-hidden="true">
+        <div className="event-tape-mid" />
+        {events.map((event, i) => {
+          const cat = categorizeEvent(event);
+          const isTall = cat === "error" || cat === "compact";
+          const left = useEvenSpacing
+            ? `${count > 1 ? (i / (count - 1)) * 100 : 50}%`
+            : `${((timestamps[i] - start) / span) * 100}%`;
+          const opacity = cat === "meta" ? 0.4 : 0.85;
+
+          const tooltipParts: string[] = [];
+          tooltipParts.push(CATEGORY_LABELS[cat] ?? event.kind);
+          if (event.toolName) tooltipParts.push(` · ${event.toolName}`);
+          if (event.tokenUsage?.total != null) {
+            tooltipParts.push(`\n${event.tokenUsage.total.toLocaleString()} tokens`);
+          }
+          const timeStr = formatTapeTime(event.timestamp);
+          if (timeStr) tooltipParts.push(`\n${timeStr}`);
+
+          return (
+            <Tooltip key={event.id} text={tooltipParts.join("")}>
+              <div
+                className={`event-tape-tick${isTall ? " tall" : ""} cat-${cat}`}
+                style={{ left, opacity }}
+              />
+            </Tooltip>
+          );
+        })}
+      </div>
+      {count > 0 ? (
+        <div className="event-tape-axis">
+          <span>{formatTapeDate(events[0].timestamp)}</span>
+          <span>{count > 1 ? formatDuration(span) : "1 event"}</span>
+          <span>{formatTapeDate(events[count - 1].timestamp)}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── ReadoutDashboard ──
+
+interface JourneyStats {
+  sessions: number;
+  estCost: number;
+  totalTokens: number;
+  toolCalls: number;
+  errors: number;
+}
+
+function computeJourneyStats(journeys: TaskJourney[], timelineEventsById: Map<string, TimelineEvent>, pricing?: ModelPricing[]): JourneyStats {
+  let estCost = 0;
+  let totalTokens = 0;
+  let toolCalls = 0;
+  let errors = 0;
+  for (const j of journeys) {
+    estCost += estimateProjectCost(j.tokenUsage, undefined, pricing);
+    totalTokens += j.tokenUsage?.total ?? 0;
+    for (const eventId of j.eventIds) {
+      const event = timelineEventsById.get(eventId);
+      if (event?.toolName) toolCalls++;
+    }
+    if (j.status === "failed") errors++;
+  }
+  return {
+    sessions: journeys.length,
+    estCost,
+    totalTokens,
+    toolCalls,
+    errors
+  };
+}
+
+function ReadoutDashboard({ journeys, copy, timelineEventsById, pricing }: { journeys: TaskJourney[]; copy: AppCopy["timeline"]; timelineEventsById: Map<string, TimelineEvent>; pricing?: ModelPricing[] }) {
+  const stats = useMemo(() => computeJourneyStats(journeys, timelineEventsById, pricing), [journeys, timelineEventsById, pricing]);
+
+  const cells = [
+    { key: "sessions", label: copy.readoutSessions, value: String(stats.sessions) },
+    { key: "estCost", label: copy.readoutEstCost, value: formatCost(stats.estCost) },
+    { key: "totalTokens", label: copy.readoutTotalTokens, value: formatMillionTokens(stats.totalTokens) },
+    { key: "toolCalls", label: copy.readoutToolCalls, value: String(stats.toolCalls) },
+    { key: "errors", label: copy.readoutErrors, value: String(stats.errors), danger: stats.errors > 0 }
+  ];
+
+  return (
+    <div className="readout-dashboard" aria-label="Project statistics">
+      {cells.map((cell) => (
+        <div key={cell.key} className={`readout-cell${cell.danger ? " danger" : ""}`}>
+          <span className="readout-cell-label">{cell.label}</span>
+          <strong className="readout-cell-value">{cell.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Search / Sort ──
+
+type SortKey = "newest" | "cost" | "duration" | "tools" | "errors";
+
+function applySearchAndSort(journeys: TaskJourney[], searchQuery: string, sortKey: SortKey, pricing?: ModelPricing[]): TaskJourney[] {
+  const query = searchQuery.trim().toLowerCase();
+  const filtered = query
+    ? journeys.filter((j) => j.title.toLowerCase().includes(query))
+    : journeys;
+
+  return [...filtered].sort((a, b) => {
+    switch (sortKey) {
+      case "cost":
+        return estimateProjectCost(b.tokenUsage, undefined, pricing) - estimateProjectCost(a.tokenUsage, undefined, pricing);
+      case "duration":
+        return b.durationMs - a.durationMs;
+      case "tools":
+        return b.skills.length - a.skills.length;
+      case "errors":
+        return (b.status === "failed" ? 1 : 0) - (a.status === "failed" ? 1 : 0);
+      case "newest":
+      default:
+        return Date.parse(b.startedAt) - Date.parse(a.startedAt);
+    }
+  });
+}
+
+// ── Pricing Editor ──
+
+function PricingEditor({ pricing, onPricingChange, copy }: {
+  pricing: ModelPricing[];
+  onPricingChange: (pricing: ModelPricing[]) => void;
+  copy: AppCopy["timeline"];
+}) {
+  const providerOrder = ["Anthropic", "OpenAI", "Other"] as const;
+
+  function handleRateChange(id: string, field: "inRate" | "outRate", value: string) {
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0) return;
+    const next = pricing.map(p => p.id === id ? { ...p, [field]: num } : p);
+    onPricingChange(next);
+  }
+
+  const grouped = useMemo(() => {
+    const groups: Record<string, ModelPricing[]> = {};
+    for (const p of pricing) {
+      if (!groups[p.provider]) groups[p.provider] = [];
+      groups[p.provider].push(p);
+    }
+    return groups;
+  }, [pricing]);
+
+  return (
+    <details className="pricing-editor">
+      <summary>
+        <span className="caret">&#9654;</span>
+        {copy.pricingHeading}
+      </summary>
+      <div className="pricing-editor-body">
+        <p className="pricing-note">{copy.pricingNote}</p>
+        <div className="pricing-headers">
+          <span>Model</span>
+          <span>{copy.pricingInputRate}</span>
+          <span>{copy.pricingOutputRate}</span>
+        </div>
+        {providerOrder.map((provider) => {
+          const items = grouped[provider] ?? [];
+          if (items.length === 0) return null;
+          return (
+            <div key={provider}>
+              <div className="pricing-provider-group">{provider}</div>
+              {items.map((item) => (
+                <div key={item.id} className="pricing-row">
+                  <span className="pricing-row-label">{item.label}</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={item.inRate}
+                    onChange={(e) => handleRateChange(item.id, "inRate", e.target.value)}
+                    aria-label={`${item.label} input rate`}
+                  />
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={item.outRate}
+                    onChange={(e) => handleRateChange(item.id, "outRate", e.target.value)}
+                    aria-label={`${item.label} output rate`}
+                  />
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
 }
 
 const ZERO_TOKEN_USAGE: TokenUsage = { input: 0, output: 0, reasoning: 0, cachedInput: 0, total: 0 };
